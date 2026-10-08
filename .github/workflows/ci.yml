@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features
+      - run: cargo test --all-features
+      - run: cargo test --no-default-features
+
+  commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Conventional commit messages
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base="${BASE:-$BEFORE}"
+          if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then range="HEAD~1..HEAD"; else range="$base..HEAD"; fi
+          pattern='^(feat|fix|refactor|perf|test|docs|chore|ci|build|style|revert)(\([a-z0-9._/-]+\))?!?: .+'
+          bad=0
+          while IFS= read -r subject; do
+            if ! printf '%s' "$subject" | grep -Eq "$pattern"; then echo "not conventional: $subject"; bad=1; fi
+          done < <(git log --no-merges --format=%s "$range")
+          exit $bad
