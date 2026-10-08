@@ -146,6 +146,13 @@ Unstable (each behind the matching cargo feature, default **on** in release buil
 
 Acceptance: fake-agent integration test per item; manual smoke of items 2–5, 7, 9, 12, 15 against Claude and Codex (both advertise list/resume/close/delete/fork/subagents per `docs/research/agents.md`).
 
+**Stage 2 results (2026-10-08):** items 1–18 implemented with fake-agent integration tests (90 tests total). Live smoke in headless Tern 0.6.2:
+- Claude 0.87.0: slash palette (84 agent commands + client commands), `/sessions` list → load with replayed history, config chips (mode/model/effort) and `/config` sheet, AskUserQuestion form elicitation answered by clicking a radio + Accept (agent received `"Coffee"`), `session_info_update` title, `usage_update` meter + cost, end-turn token line, `@main.rs` mention answered from the file.
+- Codex 2.1.1: Shift+Tab cycles the `mode` config option (Auto review → Full access).
+- Bugs found live and fixed with regression tests: layer pickers given as region roots were invisible (region roots draw no element), dialogs floated without backdrop (now modal `overlay`s), Shift+Tab never matched, palette ranked description matches above names, batched/pasted `/command` input did not reach the palette.
+- Known gaps: the in-process `tern` MCP server attaches to `session/new` only (SDK 3.1 exposes no public per-session MCP attachment for load/resume/fork); client terminals (`terminal/*`) are exercised only by fake agents because neither target adapter calls them.
+- Item 19 (NES, draft v2): not implemented (see D2).
+
 ### Stage 3 — Agent-specific features and deviations
 
 Shared adapter conventions (Claude + Codex):
@@ -281,6 +288,6 @@ Acceptance: recorded ACP transcripts (JSONL via `AcpAgent::with_debug`) per agen
 | R4 | Adapter versions move fast (codex-acp 1.x→2.x). | Pin preset versions; per-agent fixture replay catches regressions on bump. |
 | R5 | Tern 0.6.2 is closed beta; TSP v1 may change. | Pin `tern-sdk`; record/replay tests; degrade on unknown kinds via `hello.kinds`. |
 | D1 | Fallback outside Tern. | Error and exit (TSP is the product). Plain-text mode only on request. |
-| D2 | NES (`nes/*`, `document/*`) and draft ACP v2 target editors with open documents; Tern has no document model to drive them. | Implement last in stage 2 behind features; NES only if Tern file blocks expose edit state, otherwise document as not applicable. Confirm with user. |
+| D2 | NES (`nes/*`, `document/*`) and draft ACP v2 target editors with open documents; Tern has no document model to drive them. | **Not implemented.** NES needs an editor that owns open documents and cursor positions; a Tern agent block has neither (file blocks are not exposed to programs). Draft v2 is not a released protocol and no target adapter requires it (Claude serves it only behind `CLAUDE_AGENT_ACP_EXPERIMENTAL_V2=1`). Revisit when v2 ships or Tern exposes file-block state. |
 | D3 | License. | MIT (matches tern-sdk and reference integrations). |
 | D4 | Agent launch pinning vs `@latest`. | Pinned versions in presets; `acp-tsp agents update` bumps from the registry index. |
