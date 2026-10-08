@@ -6,7 +6,7 @@ use agent_client_protocol::schema::v1::{
 };
 use tern_sdk::{
     keys::Key,
-    ui::{self, OrderEntry, PickerItem},
+    ui::{self, Anchor, OrderEntry, PickerAction, PickerItem},
 };
 
 use crate::{
@@ -22,6 +22,8 @@ use super::providers::ProviderEditor;
 pub enum Kind {
     Commands,
     Sessions,
+    Model,
+    Effort,
     Mode,
     Providers,
 }
@@ -137,6 +139,16 @@ impl Palette {
                     ),
                     ("mode", "Choose a mode", model.next_mode().is_some()),
                     (
+                        "model",
+                        "Switch model for this session",
+                        has_category(model, SessionConfigOptionCategory::Model),
+                    ),
+                    (
+                        "effort",
+                        "Choose thinking effort",
+                        has_category(model, SessionConfigOptionCategory::ThoughtLevel),
+                    ),
+                    (
                         "config",
                         "Session configuration",
                         model
@@ -211,12 +223,18 @@ impl Palette {
                     });
                 }
             }
-            Kind::Mode => {
+            Kind::Mode | Kind::Model | Kind::Effort => {
+                let category = match self.kind {
+                    Kind::Mode => SessionConfigOptionCategory::Mode,
+                    Kind::Model => SessionConfigOptionCategory::Model,
+                    Kind::Effort => SessionConfigOptionCategory::ThoughtLevel,
+                    _ => unreachable!(),
+                };
                 if let Some(session) = &model.session {
                     if let Some(option) = session.config_options.as_ref().and_then(|options| {
                         options
                             .iter()
-                            .find(|o| matches!(o.category, Some(SessionConfigOptionCategory::Mode)))
+                            .find(|o| o.category.as_ref() == Some(&category))
                     }) {
                         if let SessionConfigKind::Select(select) = &option.kind {
                             let choices: Vec<_> = match &select.options {
@@ -234,7 +252,9 @@ impl Palette {
                                 detail: choice.description.clone().unwrap_or_default(),
                             }));
                         }
-                    } else if let Some(modes) = &session.modes {
+                    } else if self.kind == Kind::Mode
+                        && let Some(modes) = &session.modes
+                    {
                         rows.extend(modes.available_modes.iter().map(|mode| Row {
                             id: format!("mode:{}", mode.id),
                             label: mode.name.clone(),
@@ -298,36 +318,78 @@ impl Palette {
             return editor.render().into();
         }
         let rows = self.rows(model);
+        if self.kind == Kind::Commands {
+            let list = ui::list()
+                .key("list")
+                .selected(
+                    rows.get(self.selected)
+                        .map(|row| row.id.clone())
+                        .unwrap_or_default(),
+                )
+                .empty("No items")
+                .max_lines(10)
+                .children(rows.iter().map(|row| {
+                    ui::item(row.label.trim_start_matches('/'))
+                        .key(row.id.clone())
+                        .icon(if row.id.starts_with("agent:") {
+                            "action"
+                        } else {
+                            "settings"
+                        })
+                        .detail(vec![ui::span(row.detail.clone()).style("muted")])
+                        .value(if row.id.starts_with("client:") {
+                            "acp-tsp"
+                        } else {
+                            ""
+                        })
+                }))
+                .on_select(|id| Msg::PickerSelect(id.into()))
+                .on_activate(|id| Msg::PickerActivate(id.into()));
+            return ui::overlay()
+                .key("complete")
+                .role("omp.autocomplete")
+                .anchor(Anchor::Caret("dock.ed".into()))
+                .child(ui::col().role("omp.select").child(list))
+                .into();
+        }
         let mut order = Vec::new();
         let mut group = "";
         for row in &rows {
-            if self.kind == Kind::Commands {
-                let next = if row.id.starts_with("agent:") {
-                    "Agent commands"
-                } else {
-                    "acp-tsp"
-                };
-                if next != group {
-                    order.push(OrderEntry::Group {
-                        group: next.to_owned(),
-                        label: next.to_owned(),
-                        count: None,
-                    });
-                    group = next;
-                }
+            let next = if row.id.starts_with("agent:") {
+                "Agent commands"
+            } else {
+                "Client commands"
+            };
+            if self.kind == Kind::Commands && next != group {
+                order.push(OrderEntry::Group {
+                    group: next.into(),
+                    label: next.into(),
+                    count: None,
+                });
+                group = next;
             }
             order.push(OrderEntry::Item(row.id.clone()));
         }
         let selected = rows.get(self.selected).map(|row| row.id.clone());
+        let (title, icon, noun) = match self.kind {
+            Kind::Sessions => ("Sessions", "history", "sessions"),
+            Kind::Mode => ("Mode", "settings", "modes"),
+            Kind::Model => ("Models", "cpu", "models"),
+            Kind::Effort => ("Thinking effort", "sparkles", "levels"),
+            Kind::Providers => ("Providers", "globe", "providers"),
+            Kind::Commands => unreachable!(),
+        };
         let mut picker = ui::picker()
             .key("palette")
-            .title(match self.kind {
-                Kind::Commands => "Commands",
-                Kind::Sessions => "Sessions",
-                Kind::Mode => "Mode",
-                Kind::Providers => "Providers",
-            })
+            .title(title)
+            .icon(icon)
+            .noun(noun)
+            .size(ui::PickerSize::Lg)
+            .layout(ui::PickerLayout::Rows)
+            .preview(ui::PickerPreview::Side)
             .query(self.query.clone())
+            .cursor(self.query.encode_utf16().count())
+            .placeholder(format!("Search {noun}…"))
             .items(
                 rows.iter()
                     .map(|row| {
@@ -338,6 +400,24 @@ impl Palette {
                     .collect::<Vec<_>>(),
             )
             .order(order)
+            .actions(vec![
+                PickerAction {
+                    id: "choose".into(),
+                    label: Some("Select".into()),
+                    keys: vec!["enter".into()],
+                    primary: Some(true),
+                    ..PickerAction::default()
+                },
+                PickerAction {
+                    id: "close".into(),
+                    label: Some("Close".into()),
+                    keys: vec!["esc".into()],
+                    end: Some(true),
+                    ..PickerAction::default()
+                },
+            ])
+            .on_action("choose", Msg::PickerConfirm)
+            .on_action("close", Msg::PickerClose)
             .on_select(|id| Msg::PickerSelect(id.into()))
             .on_activate(|id| Msg::PickerActivate(id.into()));
         if let Some(selected) = selected {
@@ -347,6 +427,14 @@ impl Palette {
             picker = picker.subtitle(format!(
                 "Delete {id}? Press d again to confirm · Esc cancels"
             ));
+        }
+        let preview = rows.get(self.selected).map(|row| {
+            ui::col()
+                .child(ui::text(row.label.clone()).role("omp.ask.question"))
+                .child(ui::md(row.detail.clone()))
+        });
+        if let Some(preview) = preview {
+            picker = picker.child(preview);
         }
         picker.into()
     }
@@ -375,7 +463,7 @@ impl Palette {
             self.selected = (self.selected + 1).min(count.saturating_sub(1));
             return Choice::Changed;
         }
-        if key.is("enter") {
+        if key.is("enter") || (self.kind == Kind::Commands && key.is("tab")) {
             return self.activate(model, false);
         }
         if self.kind == Kind::Sessions && key.is("r") {
@@ -433,7 +521,7 @@ impl Palette {
         }
     }
 
-    fn activate(&mut self, model: &Model, resume: bool) -> Choice {
+    pub fn activate(&mut self, model: &Model, resume: bool) -> Choice {
         let Some(row) = self.rows(model).get(self.selected).cloned() else {
             return Choice::Changed;
         };
@@ -493,6 +581,8 @@ impl Palette {
             "client:fork" => Choice::Command(UiCmd::ForkSession),
             "client:config" => Choice::Prefs,
             "client:mode" => Choice::Open(Kind::Mode, None),
+            "client:model" => Choice::Open(Kind::Model, None),
+            "client:effort" => Choice::Open(Kind::Effort, None),
             "client:goal" => Choice::Goal,
             "client:providers" => {
                 #[cfg(feature = "unstable_llm_providers")]
@@ -510,6 +600,18 @@ impl Palette {
             _ => Choice::Changed,
         }
     }
+}
+
+fn has_category(model: &Model, category: SessionConfigOptionCategory) -> bool {
+    model
+        .session
+        .as_ref()
+        .and_then(|session| session.config_options.as_ref())
+        .is_some_and(|options| {
+            options
+                .iter()
+                .any(|option| option.category.as_ref() == Some(&category))
+        })
 }
 
 #[cfg(feature = "unstable_session_fork")]
