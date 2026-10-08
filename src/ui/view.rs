@@ -247,24 +247,25 @@ pub fn view_with(
             #[cfg(feature = "unstable_subagents")]
             EntryKind::Subagent {
                 title,
+                description,
                 state,
                 messages,
                 ..
             } => {
+                use agent_client_protocol::schema::v1::StateUpdate;
+                let status = match state {
+                    Some(StateUpdate::Running(_)) => tern_sdk::ui::AgentStatus::Running,
+                    Some(StateUpdate::RequiresAction(_)) => tern_sdk::ui::AgentStatus::Parked,
+                    _ => tern_sdk::ui::AgentStatus::Idle,
+                };
                 let mut agent = ui::agent(title.clone())
                     .key(key)
                     .depth(1_u32)
                     .collapsible(true)
-                    .status(
-                        if matches!(
-                            state,
-                            Some(agent_client_protocol::schema::v1::StateUpdate::Running(_))
-                        ) {
-                            tern_sdk::ui::AgentStatus::Running
-                        } else {
-                            tern_sdk::ui::AgentStatus::Idle
-                        },
-                    );
+                    .status(status);
+                if let Some(description) = description {
+                    agent = agent.child(ui::text(description.clone()).key("description"));
+                }
                 for (index, message) in messages.iter().enumerate() {
                     if let agent_client_protocol::schema::MaybeUndefined::Value(blocks) =
                         &message.content
@@ -402,9 +403,7 @@ pub fn view_with(
             .on_focus(Msg::Focus),
     );
     let mut result = View::new().main(main).dock(dock);
-    if let Some(picker) = picker.filter(|p| p.open) {
-        result = result.layer(picker.view());
-    } else if let Some(request) = model.oldest_elicitation() {
+    if let Some(request) = model.oldest_elicitation() {
         result = result.layer(super::elicit::dialog(request.id, &request.request, form));
     } else if let Some(permission) = model.visible_permission() {
         let id = permission.id;
@@ -426,6 +425,8 @@ pub fn view_with(
         result = result.layer(ui::col().child(dialog));
     } else if let Some(auth) = &model.auth {
         result = result.layer(auth::picker(auth, model.auth_selected));
+    } else if let Some(picker) = picker.filter(|p| p.open) {
+        result = result.layer(picker.view());
     } else if let Some(reason) = &model.exited {
         result = result.layer(
             ui::col().child(

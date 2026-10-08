@@ -13,6 +13,23 @@ use tern_sdk::{
     wire::{Change, Edit},
 };
 
+pub fn first_field(request: &CreateElicitationRequest) -> Option<String> {
+    let ElicitationMode::Form(form) = &request.mode else {
+        return None;
+    };
+    form.requested_schema
+        .properties
+        .iter()
+        .find_map(|(name, property)| {
+            match property {
+                Property::String(p) if p.enum_values.is_none() && p.one_of.is_none() => Some(name),
+                Property::Number(_) | Property::Integer(_) => Some(name),
+                _ => None,
+            }
+            .map(|name| format!("layer.elicitation.form.{name}.field.{name}"))
+        })
+}
+
 #[derive(Default)]
 pub struct FormState {
     pub id: Option<PendingId>,
@@ -37,7 +54,7 @@ impl FormState {
                     Property::String(p) => p.default.clone().map(Value::String),
                     Property::Number(p) => p.default.map(Value::Number),
                     Property::Integer(p) => p.default.map(Value::Integer),
-                    Property::Boolean(p) => p.default.map(Value::Boolean),
+                    Property::Boolean(p) => Some(Value::Boolean(p.default.unwrap_or(false))),
                     Property::Array(p) => p.default.clone().map(Value::StringArray),
                     _ => None,
                 };
@@ -146,14 +163,16 @@ impl FormState {
         if self.id != Some(id) {
             return None;
         }
-        let content = if let ElicitationMode::Form(form) = &request.mode {
-            self.errors = validate(&form.requested_schema, &self.values);
-            if !self.errors.is_empty() {
-                return None;
+        let content = match &request.mode {
+            ElicitationMode::Form(form) => {
+                self.errors = validate(&form.requested_schema, &self.values);
+                if !self.errors.is_empty() {
+                    return None;
+                }
+                Some(normalized(&form.requested_schema, &self.values))
             }
-            Some(normalized(&form.requested_schema, &self.values))
-        } else {
-            None
+            ElicitationMode::Url(_) => None,
+            _ => return None,
         };
         Some(UiCmd::Elicitation {
             id,
@@ -175,8 +194,10 @@ pub fn validate(
             .as_ref()
             .is_some_and(|required| required.contains(name));
         let value = values.get(name);
-        let blank = value.is_none_or(|v| matches!(v, Value::String(s) if s.trim().is_empty())
-            || matches!(v, Value::StringArray(items) if items.is_empty()));
+        let blank = value.is_none_or(|v| {
+            matches!(v, Value::String(s) if s.trim().is_empty())
+                || matches!(v, Value::StringArray(items) if items.is_empty())
+        });
         if blank {
             if required {
                 errors.insert(name.clone(), "Required".into());
@@ -248,7 +269,9 @@ pub fn validate(
                     Some("Choose an allowed number of options")
                 } else if !items.iter().all(|item| match &p.items {
                     MultiSelectItems::String(choices) => choices.values.contains(item),
-                    MultiSelectItems::Titled(choices) => choices.options.iter().any(|o| &o.value == item),
+                    MultiSelectItems::Titled(choices) => {
+                        choices.options.iter().any(|o| &o.value == item)
+                    }
                     _ => false,
                 }) {
                     Some("Choose a listed option")
@@ -267,16 +290,27 @@ pub fn validate(
 
 fn valid_format(format: StringFormat, text: &str) -> bool {
     match format {
-        StringFormat::Email => text.split_once('@').is_some_and(|(user, host)|
-            !user.is_empty() && host.contains('.') && !host.contains('@')),
-        StringFormat::Uri => text.split_once(':').is_some_and(|(scheme, rest)|
-            !scheme.is_empty() && !rest.is_empty() && !text.chars().any(char::is_whitespace)),
+        StringFormat::Email => text.split_once('@').is_some_and(|(user, host)| {
+            !user.is_empty() && host.contains('.') && !host.contains('@')
+        }),
+        StringFormat::Uri => text.split_once(':').is_some_and(|(scheme, rest)| {
+            !scheme.is_empty() && !rest.is_empty() && !text.chars().any(char::is_whitespace)
+        }),
         StringFormat::Date | StringFormat::DateTime => {
             let bytes = text.as_bytes();
-            let date = bytes.len() >= 10 && bytes[4] == b'-' && bytes[7] == b'-'
-                && bytes.iter().take(10).enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit());
-            if matches!(format, StringFormat::Date) { date && bytes.len() == 10 }
-            else { date && bytes.get(10) == Some(&b'T') && text[11..].contains(':') }
+            let date = bytes.len() >= 10
+                && bytes[4] == b'-'
+                && bytes[7] == b'-'
+                && bytes
+                    .iter()
+                    .take(10)
+                    .enumerate()
+                    .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit());
+            if matches!(format, StringFormat::Date) {
+                date && bytes.len() == 10
+            } else {
+                date && bytes.get(10) == Some(&b'T') && text[11..].contains(':')
+            }
         }
         _ => true,
     }

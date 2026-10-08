@@ -1,17 +1,23 @@
 use std::fs;
 
+#[cfg(any(
+    feature = "unstable_plan_operations",
+    feature = "unstable_session_compaction"
+))]
+use acp_tsp::model::EntryKind;
 use acp_tsp::{
     event::{BridgeEvent, TerminalEvent},
     model::Model,
     ui::attach,
 };
+#[cfg(any(
+    feature = "unstable_plan_operations",
+    feature = "unstable_session_compaction"
+))]
+use agent_client_protocol::schema::v1::SessionUpdate;
 use agent_client_protocol::schema::v1::{
     ContentBlock, EmbeddedResourceResource, PromptCapabilities, TerminalExitStatus,
 };
-#[cfg(any(feature = "unstable_plan_operations", feature = "unstable_session_compaction"))]
-use acp_tsp::model::EntryKind;
-#[cfg(any(feature = "unstable_plan_operations", feature = "unstable_session_compaction"))]
-use agent_client_protocol::schema::v1::SessionUpdate;
 
 #[test]
 fn terminal_output_keeps_last_utf8_boundary_and_exit_snapshot() {
@@ -31,6 +37,14 @@ fn terminal_output_keeps_last_utf8_boundary_and_exit_snapshot() {
     assert_eq!(terminal.output.len(), 256 * 1024);
     assert!(terminal.output.ends_with('é'));
     assert!(terminal.truncated);
+    model.apply(BridgeEvent::Terminal(TerminalEvent::Output {
+        id: id.clone(),
+        chunk: format!("aé{}", "z".repeat(256 * 1024 - 1)),
+        truncated: false,
+    }));
+    let terminal = &model.content.terminals[&id];
+    assert_eq!(terminal.output.len(), 256 * 1024 - 1);
+    assert_eq!(terminal.output, "z".repeat(256 * 1024 - 1));
     model.apply(BridgeEvent::Terminal(TerminalEvent::Exited {
         id: id.clone(),
         status: TerminalExitStatus::new().exit_code(7),
@@ -42,7 +56,38 @@ fn terminal_output_keeps_last_utf8_boundary_and_exit_snapshot() {
         Some(7)
     );
     assert!(terminal.released);
-    assert!(terminal.output.ends_with('é'));
+    assert!(terminal.output.ends_with('z'));
+}
+
+#[test]
+fn starting_another_session_clears_content_and_pending_requests() {
+    use acp_tsp::event::SessionStartKind;
+    use agent_client_protocol::schema::v1::{
+        CreateElicitationRequest, ElicitationFormMode, ElicitationSchema, ElicitationSessionScope,
+        UsageUpdate,
+    };
+    let mut model = Model::default();
+    model.apply(BridgeEvent::Terminal(TerminalEvent::Created {
+        id: "old".into(),
+        command: "echo secret".into(),
+        cwd: "/tmp".into(),
+    }));
+    model.apply(BridgeEvent::Update(Box::new(
+        agent_client_protocol::schema::v1::SessionUpdate::UsageUpdate(UsageUpdate::new(3, 10)),
+    )));
+    model.apply(BridgeEvent::Elicitation {
+        id: 17,
+        request: Box::new(CreateElicitationRequest::new(
+            ElicitationFormMode::new(ElicitationSessionScope::new("s"), ElicitationSchema::new()),
+            "Earlier request",
+        )),
+    });
+    model.apply(BridgeEvent::SessionStarting(SessionStartKind::New));
+    assert!(model.content.terminals.is_empty());
+    assert!(model.content.usage.is_none());
+    assert!(model.dialogs.is_empty());
+    assert!(model.elicitations.is_empty());
+    assert!(model.transcript.is_empty());
 }
 
 #[test]
@@ -156,17 +201,47 @@ fn compaction_patches_summary_until_completed() {
 #[cfg(feature = "unstable_subagents")]
 #[test]
 fn subagent_message_upserts_then_streams_without_losing_metadata() {
-    use agent_client_protocol::schema::{MaybeUndefined, v1::{SessionMessage, SessionMessageChunk, SubagentUpdate, TextContent}};
+    use agent_client_protocol::schema::{
+        MaybeUndefined,
+        v1::{SessionMessage, SessionMessageChunk, SubagentUpdate, TextContent},
+    };
     let mut model = Model::default();
     let update = |model: &mut Model, update| model.apply(BridgeEvent::Update(Box::new(update)));
-    update(&mut model, SessionUpdate::SubagentUpdate(SubagentUpdate::new("child").title("Researcher".to_owned())));
-    update(&mut model, SessionUpdate::SessionMessage(SessionMessage::new("msg")
-        .sender_session_id(Some("child".into())).content(vec![ContentBlock::Text(TextContent::new("Find"))])));
-    update(&mut model, SessionUpdate::SessionMessageChunk(SessionMessageChunk::new("msg", ContentBlock::Text(TextContent::new("ings")))));
-    let EntryKind::Subagent { title, messages, .. } = &model.transcript[0].kind else { panic!("child") };
+    update(
+        &mut model,
+        SessionUpdate::SubagentUpdate(SubagentUpdate::new("child").title("Researcher".to_owned())),
+    );
+    update(
+        &mut model,
+        SessionUpdate::SessionMessage(
+            SessionMessage::new("msg")
+                .sender_session_id(Some("child".into()))
+                .content(vec![ContentBlock::Text(TextContent::new("Find"))]),
+        ),
+    );
+    update(
+        &mut model,
+        SessionUpdate::SessionMessageChunk(SessionMessageChunk::new(
+            "msg",
+            ContentBlock::Text(TextContent::new("ings")),
+        )),
+    );
+    update(
+        &mut model,
+        SessionUpdate::SessionMessage(
+            SessionMessage::new("msg")
+                .content(vec![ContentBlock::Text(TextContent::new("Updated"))]),
+        ),
+    );
+    let EntryKind::Subagent {
+        title, messages, ..
+    } = &model.transcript[0].kind
+    else {
+        panic!("child")
+    };
     assert_eq!(title, "Researcher");
     assert!(matches!(&messages[0].content, MaybeUndefined::Value(blocks)
-        if matches!(&blocks[..], [ContentBlock::Text(text)] if text.text == "Findings")));
+        if matches!(&blocks[..], [ContentBlock::Text(text)] if text.text == "Updated")));
 }
 
 #[cfg(feature = "unstable_end_turn_token_usage")]
@@ -175,8 +250,9 @@ fn end_turn_usage_shows_per_turn_deltas_not_cumulative_totals() {
     use agent_client_protocol::schema::v1::{PromptResponse, StopReason, Usage};
     let mut model = Model::default();
     for (total, input, output) in [(17, 11, 6), (29, 20, 9)] {
-        model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(StopReason::EndTurn)
-            .usage(Usage::new(total, input, output))))));
+        model.apply(BridgeEvent::TurnEnded(Ok(Box::new(
+            PromptResponse::new(StopReason::EndTurn).usage(Usage::new(total, input, output)),
+        ))));
     }
     assert!(matches!(&model.transcript[1].kind, EntryKind::Usage(usage)
         if (usage.total_tokens, usage.input_tokens, usage.output_tokens) == (12, 9, 3)));

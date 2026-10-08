@@ -25,10 +25,18 @@ expression: "wire(&model)[\"main\"]"
           "k": "section",
           "p": {
             "key": "0",
-            "head": "cargo test · Running",
+            "head": "cargo test",
             "collapsible": true
           },
           "c": [
+            {
+              "id": "main.entry.1.0.status",
+              "k": "badge",
+              "p": {
+                "text": "Running",
+                "key": "status"
+              }
+            },
             {
               "id": "main.entry.1.0.output",
               "k": "ansi",

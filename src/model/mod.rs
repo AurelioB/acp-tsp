@@ -1,7 +1,7 @@
 //! Pure session state, updated from [`crate::event::BridgeEvent`]s.
 
-pub mod session;
 pub mod content;
+pub mod session;
 use std::{collections::VecDeque, path::PathBuf, time::Instant};
 
 use agent_client_protocol::schema::v1::{
@@ -11,9 +11,9 @@ use agent_client_protocol::schema::v1::{
 };
 
 use crate::event::{BridgeEvent, PendingId, SessionStartKind};
-use session::{SessionCatalog, SessionMetadata};
 #[cfg(feature = "unstable_plan_operations")]
 use content::plan_id;
+use session::{SessionCatalog, SessionMetadata};
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -379,7 +379,6 @@ impl Model {
                 self.loading_info = None;
                 self.queued = 0;
             }
-            _ => {}
         }
     }
 

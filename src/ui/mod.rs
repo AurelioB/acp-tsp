@@ -1,7 +1,7 @@
 //! The TSP side: owns the tty, renders the model, routes input.
 
-mod auth;
 pub mod attach;
+mod auth;
 pub mod composer;
 pub mod content;
 pub mod elicit;
@@ -156,22 +156,38 @@ fn run_with_controller(
     content::upload(&mut session, &mut model)?;
     session.render(
         sf,
-        screen(&model, &composer, session.caps(), &palette, config_open, &form, &picker),
+        screen(
+            &model,
+            &composer,
+            session.caps(),
+            &palette,
+            config_open,
+            &form,
+            &picker,
+        ),
     )?;
-    if model.oldest_elicitation().is_none() {
+    if let Some(request) = model.oldest_elicitation() {
+        if let Some(id) = elicit::first_field(&request.request) {
+            session.focus(sf, Some(&id))?;
+        }
+    } else {
         session.focus(sf, Some("dock.ed"))?;
     }
     while let Some(input) = session.next(None)? {
+        let elicitation_before = form.id;
         let dialog_before = model.dialogs.front().is_some() || model.auth.is_some();
-        let composer_blocked = dialog_before || model.exited.is_some() || picker.open
-            || palette.is_some() || config_open;
+        let composer_blocked = dialog_before
+            || model.exited.is_some()
+            || picker.open
+            || palette.is_some()
+            || config_open;
         let action = match input {
             Input::Key(key) => {
                 // Printable keys are user content: log only named keys.
                 if key.typed().is_none() {
                     tracing::debug!(name = %key.name, ctrl = key.ctrl, "key");
                 }
-                if picker.open {
+                if picker.open && model.dialogs.front().is_none() && model.auth.is_none() {
                     if key.is("escape") {
                         picker.open = false;
                         session.focus(sf, Some("dock.ed"))?;
@@ -215,7 +231,9 @@ fn run_with_controller(
                     }
                 } else if model.dialogs.front().is_none() && model.auth.is_some() {
                     auth::key(&key, &mut model)
-                } else if model.dialogs.front().is_none() && let Some(active) = &mut palette {
+                } else if model.dialogs.front().is_none()
+                    && let Some(active) = &mut palette
+                {
                     let choice = active.key(&key, &model);
                     palette_choice(choice, &mut palette, &mut config_open, &mut composer)
                 } else if model.dialogs.front().is_none() && config_open {
@@ -226,13 +244,19 @@ fn run_with_controller(
                         prefs::key(&key, &model, &mut config_selected)
                             .map_or(Action::Changed, Action::Command)
                     }
-                } else if model.dialogs.front().is_none() && model.auth.is_none()
-                    && model.exited.is_none() && key.is("tab") && key.shift {
+                } else if model.dialogs.front().is_none()
+                    && model.auth.is_none()
+                    && model.exited.is_none()
+                    && key.is("tab")
+                    && key.shift
+                {
                     model.next_mode().map_or(Action::None, Action::Command)
-                } else if !composer_blocked && composer.text.is_empty() && key.typed() == Some("/") {
+                } else if !composer_blocked && composer.text.is_empty() && key.typed() == Some("/")
+                {
                     palette = Some(Palette::new(Kind::Commands));
                     Action::Changed
-                } else if key.typed() == Some("@") && !composer_blocked
+                } else if key.typed() == Some("@")
+                    && !composer_blocked
                     && let Some(current) = &model.session
                 {
                     composer.insert("@");
@@ -268,7 +292,8 @@ fn run_with_controller(
                             composer = Composer::default();
                             palette = Some(Palette::new(Kind::Commands));
                         } else if edit.text.contains('@')
-                            && let Some(current) = &model.session {
+                            && let Some(current) = &model.session
+                        {
                             picker.open(&current.cwd);
                         }
                         Action::Changed
@@ -329,8 +354,10 @@ fn run_with_controller(
                 Msg::ElicitFocus(field) => {
                     if model.oldest_elicitation().is_some() {
                         form.focus = Some(field.clone());
-                        session
-                            .focus(sf, Some(&format!("layer.elicitation.form.{field}.field.{field}")))?;
+                        session.focus(
+                            sf,
+                            Some(&format!("layer.elicitation.form.{field}.field.{field}")),
+                        )?;
                         Action::Changed
                     } else {
                         Action::None
@@ -392,39 +419,69 @@ fn run_with_controller(
                     }
                 }
                 Msg::PickerSelect(id) if palette.is_some() => {
-                    let choice = palette.as_mut().expect("picker checked").select(&id, &model, false);
+                    let choice = palette
+                        .as_mut()
+                        .expect("picker checked")
+                        .select(&id, &model, false);
                     palette_choice(choice, &mut palette, &mut config_open, &mut composer)
                 }
                 Msg::PickerActivate(id) if palette.is_some() => {
-                    let choice = palette.as_mut().expect("picker checked").select(&id, &model, true);
+                    let choice = palette
+                        .as_mut()
+                        .expect("picker checked")
+                        .select(&id, &model, true);
                     palette_choice(choice, &mut palette, &mut config_open, &mut composer)
                 }
                 Msg::AuthSelect(id) => {
-                    if let Some(index) = id.strip_prefix("method:").and_then(|s| s.parse::<usize>().ok())
-                        && model.auth.as_ref().is_some_and(|auth| index < auth.methods.len()) {
+                    if let Some(index) = id
+                        .strip_prefix("method:")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        && model
+                            .auth
+                            .as_ref()
+                            .is_some_and(|auth| index < auth.methods.len())
+                    {
                         model.auth_selected = index;
                         Action::Changed
-                    } else { Action::None }
+                    } else {
+                        Action::None
+                    }
                 }
-                Msg::AuthActivate(id) => id.strip_prefix("method:")
+                Msg::AuthActivate(id) => id
+                    .strip_prefix("method:")
                     .and_then(|s| s.parse::<usize>().ok())
                     .map_or(Action::None, |index| auth::choose(&model, index)),
-                Msg::ConfigChange(id, value) if config_open =>
+                Msg::ConfigChange(id, value) if config_open => {
                     prefs::change(&model, id.as_deref(), &value)
-                        .map_or(Action::None, Action::Command),
+                        .map_or(Action::None, Action::Command)
+                }
                 #[cfg(feature = "unstable_llm_providers")]
                 Msg::ProviderChange(id, value) => {
-                    if let Some(editor) = palette.as_mut().and_then(|picker| picker.provider_editor.as_mut()) {
-                        editor.change(id.as_deref(), &value).map_or(Action::Changed, Action::Command)
-                    } else { Action::None }
+                    if let Some(editor) = palette
+                        .as_mut()
+                        .and_then(|picker| picker.provider_editor.as_mut())
+                    {
+                        editor
+                            .change(id.as_deref(), &value)
+                            .map_or(Action::Changed, Action::Command)
+                    } else {
+                        Action::None
+                    }
                 }
                 #[cfg(feature = "unstable_llm_providers")]
                 Msg::ProviderApply => {
-                    if let Some(editor) = palette.as_mut().and_then(|picker| picker.provider_editor.as_mut()) {
+                    if let Some(editor) = palette
+                        .as_mut()
+                        .and_then(|picker| picker.provider_editor.as_mut())
+                    {
                         editor.apply().map_or(Action::Changed, Action::Command)
-                    } else { Action::None }
+                    } else {
+                        Action::None
+                    }
                 }
-                Msg::PickerSelect(_) | Msg::PickerActivate(_) | Msg::ConfigChange(_, _) => Action::None,
+                Msg::PickerSelect(_) | Msg::PickerActivate(_) | Msg::ConfigChange(_, _) => {
+                    Action::None
+                }
             },
             Input::Event(Event::Error(error)) => {
                 tracing::warn!(message = %error.msg, "TSP rejected operation");
@@ -510,6 +567,11 @@ fn run_with_controller(
             }
             None => {}
         }
+        if !model.dialogs.is_empty() || model.auth.is_some() {
+            picker.open = false;
+            palette = None;
+            config_open = false;
+        }
         if let Some(request) = model.oldest_elicitation() {
             form.init(request.id, &request.request);
         } else {
@@ -523,8 +585,22 @@ fn run_with_controller(
             content::upload(&mut session, &mut model)?;
             session.render(
                 sf,
-                screen(&model, &composer, session.caps(), &palette, config_open, &form, &picker),
+                screen(
+                    &model,
+                    &composer,
+                    session.caps(),
+                    &palette,
+                    config_open,
+                    &form,
+                    &picker,
+                ),
             )?;
+            if form.id != elicitation_before
+                && let Some(request) = model.oldest_elicitation()
+                && let Some(id) = elicit::first_field(&request.request)
+            {
+                session.focus(sf, Some(&id))?;
+            }
         }
     }
     let _ = cmds.send(UiCmd::Shutdown);

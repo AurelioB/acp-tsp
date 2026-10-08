@@ -41,7 +41,7 @@ expression: "wire(&model)[\"main\"]"
               "p": {
                 "text": "fn main() {}",
                 "key": "code",
-                "lang": "x-rust"
+                "lang": "rs"
               }
             }
           ]
