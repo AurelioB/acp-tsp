@@ -158,7 +158,9 @@ pub fn run_with_terminal_stop(
 }
 
 fn stop_job() -> std::io::Result<()> {
-    // The adapter subprocesses share our foreground process group; stop them with us.
+    // Stops acp-tsp's own process group, as the shell's Ctrl+Z would. The ACP SDK starts the
+    // adapter in a process group of its own (observed: `npm exec` leads a separate pgid), so the
+    // agent keeps running; its messages wait in the pipe until `fg`.
     rustix::process::kill_current_process_group(rustix::process::Signal::TSTP)
         .map_err(std::io::Error::from)
 }
@@ -300,8 +302,8 @@ fn run_with_controller(
                     if session.is_open(sf) {
                         session.close_surface(sf, true)?;
                     }
-                    // Cooked mode lets the shell take control while the whole foreground job,
-                    // including ACP adapters in our process group, is stopped.
+                    // Cooked mode lets the shell take control while acp-tsp is stopped; the
+                    // adapter, in its own process group, keeps running (see `stop_job`).
                     let stopped = if let Some(controller) = controller.as_ref() {
                         controller.with_cooked(&stop)
                     } else {
