@@ -213,6 +213,7 @@ async fn permission_selection_and_cancel_resolve_pending_and_return_cancelled() 
                 cx.spawn({
                     let cx = cx.clone();
                     async move {
+                        cancelled.store(false, Ordering::SeqCst);
                         let permission = RequestPermissionRequest::new(
                             request.session_id,
                             ToolCallUpdate::new("tool", ToolCallUpdateFields::new()),
@@ -317,6 +318,25 @@ async fn permission_selection_and_cancel_resolve_pending_and_return_cancelled() 
         outcome: RequestPermissionOutcome::Cancelled,
     })
     .unwrap();
+    // The cancel state must end with its turn: the next turn's permission reaches the user.
+    cmd.send(UiCmd::Prompt(text("again"))).unwrap();
+    let mut events = until(&rx, |event| matches!(event, BridgeEvent::Permission { .. })).await;
+    let BridgeEvent::Permission { id: again, .. } = events.pop().unwrap() else {
+        unreachable!()
+    };
+    cmd.send(UiCmd::Permission {
+        id: again,
+        outcome: RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("yes")),
+    })
+    .unwrap();
+    assert!(matches!(
+        selected_rx.recv().await.unwrap(),
+        RequestPermissionOutcome::Selected(_)
+    ));
+    until(&rx, |event| {
+        matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)))
+    })
+    .await;
     cmd.send(UiCmd::Shutdown).unwrap();
     bridge.await.unwrap().unwrap();
     agent.await.unwrap().unwrap();

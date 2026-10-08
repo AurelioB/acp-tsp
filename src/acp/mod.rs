@@ -154,14 +154,20 @@ async fn drive(
                     if permissions.session.lock().expect("session lock").as_ref() != Some(&request.session_id) {
                         return responder.respond_with_error(Error::invalid_params());
                     }
-                    if permissions.cancelling.load(Ordering::SeqCst) {
-                        return responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
-                    }
                     let id = NEXT_PERMISSION_ID.fetch_add(1, Ordering::Relaxed);
                     let cancellation = responder.cancellation();
                     let (done, closed) = tokio::sync::oneshot::channel();
-                    permissions.permissions.lock().expect("permission lock").insert(id, PendingPermission { responder, done });
-                    events.send(BridgeEvent::Permission { id, request: Box::new(request) });
+                    {
+                        // Check and register under the lock `UiCmd::Cancel` takes to raise the flag,
+                        // so a request is either refused here or drained by `resolve_all`.
+                        let mut pending = permissions.permissions.lock().expect("permission lock");
+                        if permissions.cancelling.load(Ordering::SeqCst) {
+                            drop(pending);
+                            return responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
+                        }
+                        pending.insert(id, PendingPermission { responder, done });
+                        events.send(BridgeEvent::Permission { id, request: Box::new(request) });
+                    }
                     let pending = permissions.clone();
                     let events = events.clone();
                     cx.spawn(async move {
@@ -308,8 +314,10 @@ async fn drive(
                         }
                         Some(UiCmd::Cancel) => {
                             queued.clear();
-                            // Flag first so a permission request racing this cancel is refused too.
+                            // Raise the flag under the permissions lock: a racing request either
+                            // registered before (drained below) or sees the flag and is refused.
                             if running {
+                                let _registry = shared.permissions.lock().expect("permission lock");
                                 shared.cancelling.store(true, Ordering::SeqCst);
                             }
                             shared.resolve_all(&events);
