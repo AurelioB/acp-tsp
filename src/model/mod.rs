@@ -1,14 +1,17 @@
 //! Pure session state, updated from [`crate::event::BridgeEvent`]s.
 
+pub mod session;
+
 use std::{collections::VecDeque, path::PathBuf, time::Instant};
 
 use agent_client_protocol::schema::v1::{
-    AuthMethod, ContentBlock, ContentChunk, Implementation, PermissionOptionKind, Plan,
-    RequestPermissionRequest, SessionConfigOption, SessionId, SessionModeState, SessionUpdate,
-    StopReason, ToolCall, ToolCallId, ToolCallStatus,
+    AgentCapabilities, AuthMethod, ContentBlock, ContentChunk, Implementation,
+    PermissionOptionKind, Plan, RequestPermissionRequest, SessionConfigOption, SessionId,
+    SessionModeState, SessionUpdate, StopReason, ToolCall, ToolCallId, ToolCallStatus,
 };
 
-use crate::event::{BridgeEvent, PendingId};
+use crate::event::{BridgeEvent, PendingId, SessionStartKind};
+use session::SessionCatalog;
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -56,9 +59,13 @@ pub struct AuthPrompt {
 #[derive(Debug, Clone)]
 pub struct ActiveSession {
     pub id: SessionId,
+    pub kind: SessionStartKind,
     pub cwd: PathBuf,
+    pub additional_dirs: Vec<PathBuf>,
     pub modes: Option<SessionModeState>,
     pub config_options: Option<Vec<SessionConfigOption>>,
+    pub title: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,6 +79,9 @@ pub struct Model {
     pub status: String,
     pub agent: Option<Implementation>,
     pub auth: Option<AuthPrompt>,
+    pub auth_selected: usize,
+    pub capabilities: AgentCapabilities,
+    pub sessions: SessionCatalog,
     pub session: Option<ActiveSession>,
     pub turn: Turn,
     pub queued: usize,
@@ -95,7 +105,10 @@ impl Default for Model {
         Self {
             status: String::new(),
             agent: None,
+            capabilities: AgentCapabilities::default(),
+            sessions: SessionCatalog::default(),
             auth: None,
+            auth_selected: 0,
             session: None,
             turn: Turn::Idle,
             queued: 0,
@@ -158,26 +171,92 @@ impl Model {
     pub fn apply(&mut self, event: BridgeEvent) {
         match event {
             BridgeEvent::Status(text) => self.status = text,
-            BridgeEvent::Initialized(init) => self.agent = init.agent_info,
+            BridgeEvent::Initialized(init) => {
+                self.agent = init.agent_info;
+                self.capabilities = init.agent_capabilities;
+            }
             BridgeEvent::AuthRequired { methods, message } => {
+                self.auth_selected = 0;
                 self.auth = Some(AuthPrompt { methods, message });
+            }
+            BridgeEvent::SessionStarting(_) => {
+                self.session = None;
+                self.auth = None;
+                self.turn = Turn::Idle;
+                self.queued = 0;
+                self.local_echo = None;
+                self.queued_echoes.clear();
+                self.transcript.clear();
+                self.permissions.clear();
+                self.errors.clear();
+                self.notices.clear();
+                self.debug_updates.clear();
+                self.sessions.commands.clear();
+                self.status = "Loading session…".into();
             }
             BridgeEvent::SessionStarted {
                 session_id,
+                kind,
                 cwd,
+                additional_dirs,
                 modes,
                 config_options,
-                ..
             } => {
                 self.session = Some(ActiveSession {
                     id: session_id,
+                    kind,
                     cwd,
+                    additional_dirs,
                     modes,
                     config_options,
+                    title: None,
+                    updated_at: None,
                 });
                 self.auth = None;
                 self.exited = None;
                 self.status = "Ready".into();
+            }
+            BridgeEvent::SessionClosed => {
+                self.session = None;
+                self.status = "Session closed".into();
+            }
+            BridgeEvent::SessionList {
+                sessions,
+                next_cursor,
+                first_page,
+            } => {
+                if first_page {
+                    self.sessions.items = sessions;
+                } else {
+                    self.sessions.items.extend(sessions);
+                }
+                self.sessions.next_cursor = next_cursor;
+            }
+            BridgeEvent::SessionDeleted(id) => {
+                self.sessions
+                    .items
+                    .retain(|session| session.session_id != id);
+            }
+            BridgeEvent::ModeChanged(id) => {
+                if let Some(modes) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.modes.as_mut())
+                {
+                    modes.current_mode_id = id;
+                }
+            }
+            BridgeEvent::ConfigOptions(options) => {
+                if let Some(session) = &mut self.session {
+                    session.config_options = Some(options);
+                }
+            }
+            #[cfg(feature = "unstable_llm_providers")]
+            BridgeEvent::Providers(providers) => self.sessions.providers = Some(*providers),
+            BridgeEvent::LoggedOut => {
+                self.auth = None;
+                self.session = None;
+                self.status = "Logged out".into();
             }
             BridgeEvent::Update(update) => self.update(*update),
             BridgeEvent::Permission { id, request } => {
@@ -228,7 +307,7 @@ impl Model {
                 self.auth = None;
                 self.queued = 0;
             }
-            other => tracing::debug!(?other, "event not handled yet"),
+            _ => {}
         }
     }
 
@@ -291,6 +370,9 @@ impl Model {
     }
 
     fn update(&mut self, update: SessionUpdate) {
+        let Some(update) = self.apply_session_update(update) else {
+            return;
+        };
         match update {
             SessionUpdate::UserMessageChunk(chunk) => self.chunk("user", chunk),
             SessionUpdate::AgentMessageChunk(chunk) => self.chunk("agent", chunk),
