@@ -391,5 +391,44 @@ fn usage_query_only_uses_a_command_the_agent_advertises() {
         model_for("@agentclientprotocol/codex-acp", &["status", "review"]).usage_command(),
         Some("/status")
     );
-    assert_eq!(model_for("other-agent", &["status"]).usage_command(), None);
+    // Another agent's `/usage` may be a model prompt, so it is never sent hidden.
+    assert_eq!(
+        model_for("other-agent", &["status", "usage"]).usage_command(),
+        None
+    );
+}
+
+#[test]
+fn cancelled_or_abandoned_usage_query_leaves_no_stuck_state() {
+    use agent_client_protocol::schema::v1::{PromptResponse, StopReason};
+    let mut model = Model::default();
+    start(&mut model);
+    // Cancelled: the query ends, the report is no longer fetching, nothing reaches history.
+    model.begin_usage();
+    model.cancel();
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+        StopReason::Cancelled,
+    )))));
+    assert!(matches!(model.turn, acp_tsp::model::Turn::Idle));
+    assert!(!model.usage_report.fetching);
+    assert!(model.usage_report.windows.is_empty());
+    assert!(model.turn_summaries.is_empty());
+    // Session switch while a query runs: the next session starts clean, and its first real
+    // turn is rendered normally rather than swallowed as usage output.
+    model.begin_usage();
+    model.apply(BridgeEvent::SessionStarting(SessionStartKind::New));
+    start(&mut model);
+    assert!(!model.usage_report.fetching);
+    model.submitted("hello".into());
+    model.apply(BridgeEvent::Update(Box::new(
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            "hi there",
+        )))),
+    )));
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+        StopReason::EndTurn,
+    )))));
+    assert!(model.transcript.iter().any(|entry| matches!(&entry.kind,
+        EntryKind::Agent { blocks, .. } if format!("{blocks:?}").contains("hi there"))));
+    assert_eq!(model.turn_summaries.len(), 1);
 }

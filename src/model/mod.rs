@@ -581,19 +581,14 @@ impl Model {
 
     /// The agent-local command with no model call; unknown agents have no usage command.
     pub fn usage_command(&self) -> Option<&'static str> {
-        // Only a command the agent advertises is safe to send hidden: anything else would reach
-        // the model as an ordinary prompt. Codex reports limits in `/status`, others in `/usage`.
+        // Only commands the adapter answers locally, without a model call (verified in their
+        // sources: claude-agent-acp's `/usage` handler, codex-acp's `/status` handler), and only
+        // when advertised. Another agent's `/usage` may be a model prompt.
         let advertised = |name: &str| self.sessions.commands.iter().any(|c| c.name == name);
-        let codex = self
-            .agent
-            .as_ref()
-            .is_some_and(|agent| agent.name == crate::quirks::CODEX_ACP);
-        if codex && advertised("status") {
-            Some("/status")
-        } else if advertised("usage") {
-            Some("/usage")
-        } else {
-            None
+        match self.agent.as_ref().map(|agent| agent.name.as_str()) {
+            Some(crate::quirks::CODEX_ACP) if advertised("status") => Some("/status"),
+            Some(crate::quirks::CLAUDE_ACP) if advertised("usage") => Some("/usage"),
+            _ => None,
         }
     }
 

@@ -58,7 +58,7 @@ The client `/usage` dashboard queries the active adapter's local command only wh
 `/usage` reports percent **used**; Codex's `/status` reports percent **left**. Both are normalized
 to a used-fraction bar labeled with percent left. Query turns are hidden from transcript and per-session turn totals.
 The adapter's raw markdown remains available in Details (including account information).
-Other agents require an advertised `/usage` command; unsupported agents show session totals only.
+Only these two adapters are queried, and only when they advertise the command: both answer it without a model call. Another agent's `/usage` could be an ordinary model prompt, so other agents show session totals only.
 
 Why parse text at all: Codex keeps its rate limits inside the adapter and only renders them in `/status` text. Claude does stream structured `_meta["_claude/rateLimit"]` events (`rateLimitType`, `utilization`, `resetsAt`). But each event covers one window, and they arrive only when the SDK emits a rate-limit event, so they can't build the full set of limits on demand. acp-tsp uses them for the rate-limit warning banner, and Claude's `/usage` for the dashboard. The text parsers are pinned to claude-agent-acp 0.87.0 and codex-acp 2.1.1, tested against captured output (`tests/fixtures/{claude/usage.md,codex/status.md}`). If the wording changes, no limit rows are shown and the raw report stays in Details. Values are never carried over from an earlier check, and "checked … ago" shows how old they are.
 

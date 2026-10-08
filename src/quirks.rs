@@ -2,6 +2,9 @@
 
 use agent_client_protocol::schema::v1::InitializeResponse;
 
+/// The Claude adapter's `agentInfo.name`.
+pub const CLAUDE_ACP: &str = "@agentclientprotocol/claude-agent-acp";
+
 /// The Codex adapter's `agentInfo.name`.
 pub const CODEX_ACP: &str = "@agentclientprotocol/codex-acp";
 
