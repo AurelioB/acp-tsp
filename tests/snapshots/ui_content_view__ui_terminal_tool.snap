@@ -1,0 +1,57 @@
+---
+source: tests/ui_content_view.rs
+expression: "wire(&model)[\"main\"]"
+---
+{
+  "id": "main",
+  "k": "col",
+  "p": {
+    "key": "transcript"
+  },
+  "c": [
+    {
+      "id": "main.entry.1",
+      "k": "tool",
+      "p": {
+        "name": "other",
+        "key": "entry.1",
+        "title": "Tests",
+        "status": "pending",
+        "collapsible": true
+      },
+      "c": [
+        {
+          "id": "main.entry.1.0",
+          "k": "section",
+          "p": {
+            "key": "0",
+            "head": "cargo test · Running",
+            "collapsible": true
+          },
+          "c": [
+            {
+              "id": "main.entry.1.0.output",
+              "k": "ansi",
+              "p": {
+                "text": "\u001b[32mOK\u001b[0m\n",
+                "key": "output"
+              }
+            },
+            {
+              "id": "main.entry.1.0.kill",
+              "k": "el",
+              "p": {
+                "tag": "button",
+                "text": "Kill terminal",
+                "key": "kill",
+                "actions": {
+                  "click": "click"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -46,10 +46,16 @@ Built-in adapters are pinned: Claude `@agentclientprotocol/claude-agent-acp@0.87
 | ↑ ↓ | prompt history |
 | Escape, Ctrl+C | cancel the running turn |
 | 1–9, Escape | answer the permission dialog (Escape rejects) |
+| @ | pick a workspace file; mentions attach file links, and supported text/images/audio |
+| Enter / Escape in an elicitation | accept validated form fields / cancel; URL requests offer Done and Cancel |
+| k while a terminal card is focused | kill its running process |
 | r | restart an agent that exited |
 | Ctrl+D (empty composer), Ctrl+C twice | quit |
 
 Prompts typed during a turn are queued and sent when it ends.
+File mentions stay inside the session workspace roots, including additional directories.
+Small text files are embedded only when the agent advertises embedded context;
+images and audio are sent only when their respective prompt capabilities are advertised.
 
 The slash picker offers `/new`, `/sessions`, `/resume`, `/close`, `/delete`,
 `/mode`, `/config`, `/logout`, `/restart`, and `/quit` when supported by the

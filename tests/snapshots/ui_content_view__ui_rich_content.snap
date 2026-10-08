@@ -1,0 +1,60 @@
+---
+source: tests/ui_content_view.rs
+expression: "wire(&model)[\"main\"]"
+---
+{
+  "id": "main",
+  "k": "col",
+  "p": {
+    "key": "transcript"
+  },
+  "c": [
+    {
+      "id": "main.entry.1",
+      "k": "col",
+      "p": {
+        "key": "entry.1"
+      },
+      "c": [
+        {
+          "id": "main.entry.1.body.0",
+          "k": "image",
+          "p": {
+            "key": "body.0",
+            "blob": "sha256-image",
+            "alt": "Attached image"
+          }
+        },
+        {
+          "id": "main.entry.1.body.1",
+          "k": "section",
+          "p": {
+            "key": "body.1",
+            "head": "file:///src/main.rs",
+            "collapsible": true,
+            "collapsed": true
+          },
+          "c": [
+            {
+              "id": "main.entry.1.body.1.code",
+              "k": "code",
+              "p": {
+                "text": "fn main() {}",
+                "key": "code",
+                "lang": "x-rust"
+              }
+            }
+          ]
+        },
+        {
+          "id": "main.entry.1.body.2",
+          "k": "md",
+          "p": {
+            "text": "[source](file:///src/main.rs)",
+            "key": "body.2"
+          }
+        }
+      ]
+    }
+  ]
+}

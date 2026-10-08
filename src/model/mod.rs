@@ -1,7 +1,7 @@
 //! Pure session state, updated from [`crate::event::BridgeEvent`]s.
 
 pub mod session;
-
+pub mod content;
 use std::{collections::VecDeque, path::PathBuf, time::Instant};
 
 use agent_client_protocol::schema::v1::{
@@ -12,6 +12,8 @@ use agent_client_protocol::schema::v1::{
 
 use crate::event::{BridgeEvent, PendingId, SessionStartKind};
 use session::{SessionCatalog, SessionMetadata};
+#[cfg(feature = "unstable_plan_operations")]
+use content::plan_id;
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -27,27 +29,55 @@ pub enum EntryKind {
     User {
         text: String,
         message_id: Option<String>,
+        blocks: Vec<ContentBlock>,
         local: bool,
     },
     Agent {
         text: String,
         message_id: Option<String>,
+        blocks: Vec<ContentBlock>,
     },
     Thought {
         text: String,
         message_id: Option<String>,
+        blocks: Vec<ContentBlock>,
     },
     Tool {
         call: Box<ToolCall>,
         cancelled: bool,
     },
     Plan(Plan),
+    #[cfg(feature = "unstable_plan_operations")]
+    IdentifiedPlan(agent_client_protocol::schema::v1::PlanUpdateContent),
+    #[cfg(feature = "unstable_session_compaction")]
+    Compaction {
+        id: agent_client_protocol::schema::v1::CompactionId,
+        status: agent_client_protocol::schema::v1::CompactionStatus,
+        summary: Vec<ContentBlock>,
+        error: Option<String>,
+    },
+    #[cfg(feature = "unstable_subagents")]
+    Subagent {
+        id: SessionId,
+        title: String,
+        description: Option<String>,
+        state: Option<agent_client_protocol::schema::v1::StateUpdate>,
+        messages: Vec<agent_client_protocol::schema::v1::SessionMessage>,
+    },
+    #[cfg(feature = "unstable_end_turn_token_usage")]
+    Usage(agent_client_protocol::schema::v1::Usage),
 }
 
 #[derive(Debug, Clone)]
 pub struct PendingPermission {
     pub id: PendingId,
     pub request: Box<RequestPermissionRequest>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingElicitation {
+    pub id: PendingId,
+    pub request: Box<agent_client_protocol::schema::v1::CreateElicitationRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +108,7 @@ pub enum Turn {
 pub struct Model {
     pub status: String,
     pub agent: Option<Implementation>,
+    pub prompt_capabilities: agent_client_protocol::schema::v1::PromptCapabilities,
     pub auth: Option<AuthPrompt>,
     pub auth_selected: usize,
     pub capabilities: AgentCapabilities,
@@ -88,6 +119,9 @@ pub struct Model {
     pub queued: usize,
     pub transcript: Vec<Entry>,
     pub permissions: VecDeque<PendingPermission>,
+    pub elicitations: VecDeque<PendingElicitation>,
+    pub dialogs: VecDeque<PendingId>,
+    pub content: content::ContentState,
     pub errors: Vec<String>,
     pub notices: Vec<String>,
     pub debug_updates: Vec<String>,
@@ -105,6 +139,7 @@ impl Default for Model {
     fn default() -> Self {
         Self {
             status: String::new(),
+            prompt_capabilities: Default::default(),
             agent: None,
             capabilities: AgentCapabilities::default(),
             sessions: SessionCatalog::default(),
@@ -116,6 +151,9 @@ impl Default for Model {
             queued: 0,
             transcript: Vec::new(),
             permissions: VecDeque::new(),
+            elicitations: VecDeque::new(),
+            dialogs: VecDeque::new(),
+            content: content::ContentState::default(),
             errors: Vec::new(),
             notices: Vec::new(),
             debug_updates: Vec::new(),
@@ -153,6 +191,9 @@ impl Model {
             self.queued_echoes.push_back(text.clone());
         }
         self.push(EntryKind::User {
+            blocks: vec![ContentBlock::Text(
+                agent_client_protocol::schema::v1::TextContent::new(text.clone()),
+            )],
             text,
             message_id: None,
             local: true,
@@ -174,6 +215,7 @@ impl Model {
         match event {
             BridgeEvent::Status(text) => self.status = text,
             BridgeEvent::Initialized(init) => {
+                self.prompt_capabilities = init.agent_capabilities.prompt_capabilities.clone();
                 self.agent = init.agent_info;
                 self.capabilities = init.agent_capabilities;
             }
@@ -191,6 +233,9 @@ impl Model {
                 self.queued_echoes.clear();
                 self.transcript.clear();
                 self.permissions.clear();
+                self.elicitations.clear();
+                self.dialogs.clear();
+                self.content = content::ContentState::default();
                 self.errors.clear();
                 self.notices.clear();
                 self.debug_updates.clear();
@@ -266,11 +311,29 @@ impl Model {
             }
             BridgeEvent::Update(update) => self.update(*update),
             BridgeEvent::Permission { id, request } => {
-                self.permissions
-                    .push_back(PendingPermission { id, request });
+                self.permissions.push_back(PendingPermission { id, request });
+                self.dialogs.push_back(id);
             }
-            BridgeEvent::Resolved(id) => self.permissions.retain(|permission| permission.id != id),
+            BridgeEvent::Elicitation { id, request } => {
+                self.elicitations.push_back(PendingElicitation { id, request });
+                self.dialogs.push_back(id);
+            }
+            BridgeEvent::ElicitationComplete(id) => {
+                if let Some(pending) = self.elicitations.iter().find(|p| matches!(&p.request.mode, agent_client_protocol::schema::v1::ElicitationMode::Url(url) if url.elicitation_id == id)) {
+                    let pending_id = pending.id;
+                    self.resolve_dialog(pending_id);
+                }
+            }
+            BridgeEvent::Resolved(id) => self.resolve_dialog(id),
+            BridgeEvent::Terminal(event) => self.content.terminal(event),
             BridgeEvent::TurnEnded(result) => {
+                #[cfg(feature = "unstable_end_turn_token_usage")]
+                if let Ok(response) = &result
+                    && let Some(usage) = &response.usage
+                {
+                    let delta = self.content.turn_usage(usage);
+                    self.push(EntryKind::Usage(delta));
+                }
                 let result = result.map(|response| response.stop_reason);
                 if matches!(result, Ok(StopReason::Cancelled)) {
                     for entry in &mut self.transcript {
@@ -310,6 +373,8 @@ impl Model {
                 self.local_echo = None;
                 self.queued_echoes.clear();
                 self.permissions.clear();
+                self.elicitations.clear();
+                self.dialogs.clear();
                 self.auth = None;
                 self.loading_info = None;
                 self.queued = 0;
@@ -318,24 +383,38 @@ impl Model {
         }
     }
 
+    fn resolve_dialog(&mut self, id: PendingId) {
+        self.permissions.retain(|p| p.id != id);
+        self.elicitations.retain(|p| p.id != id);
+        self.dialogs.retain(|pending| *pending != id);
+    }
+
+    pub fn oldest_elicitation(&self) -> Option<&PendingElicitation> {
+        let id = self.dialogs.front()?;
+        self.elicitations.iter().find(|p| p.id == *id)
+    }
+
+    pub fn visible_permission(&self) -> Option<&PendingPermission> {
+        let id = self.dialogs.front()?;
+        self.permissions.iter().find(|p| p.id == *id)
+    }
+
     fn chunk(&mut self, kind: &'static str, chunk: ContentChunk) {
-        let text = match chunk.content {
-            ContentBlock::Text(content) => content.text,
+        let block = chunk.content;
+        let text = match &block {
+            ContentBlock::Text(content) => content.text.clone(),
             ContentBlock::ResourceLink(link) => resource_link_markdown(&link.name, &link.uri),
-            _ => {
-                self.debug_updates
-                    .push(format!("{kind}: unsupported content"));
-                return;
-            }
+            _ => String::new(),
         };
         // Tern shows a locally submitted prompt immediately. Only discard
         // ACP user chunks matching the remaining prefix of that exact prompt.
         if kind == "user"
             && let Some((expected, consumed)) = &mut self.local_echo
         {
-            if expected
-                .get(*consumed..)
-                .is_some_and(|remaining| remaining.starts_with(&text))
+            if !text.is_empty()
+                && expected
+                    .get(*consumed..)
+                    .is_some_and(|remaining| remaining.starts_with(&text))
             {
                 *consumed += text.len();
                 return;
@@ -347,32 +426,46 @@ impl Model {
             let target = match &mut last.kind {
                 EntryKind::User {
                     text,
+                    blocks,
                     message_id: id,
                     local: false,
-                } if kind == "user" && *id == message_id => Some(text),
+                } if kind == "user" && *id == message_id => Some((text, blocks)),
                 EntryKind::Agent {
                     text,
+                    blocks,
                     message_id: id,
-                } if kind == "agent" && *id == message_id => Some(text),
+                } if kind == "agent" && *id == message_id => Some((text, blocks)),
                 EntryKind::Thought {
                     text,
+                    blocks,
                     message_id: id,
-                } if kind == "thought" && *id == message_id => Some(text),
+                } if kind == "thought" && *id == message_id => Some((text, blocks)),
                 _ => None,
             };
-            if let Some(target) = target {
-                target.push_str(&text);
+            if let Some((target_text, blocks)) = target {
+                target_text.push_str(&text);
+                content::append_text(blocks, block);
                 return;
             }
         }
+        let blocks = vec![block];
         self.push(match kind {
             "user" => EntryKind::User {
                 text,
                 message_id,
+                blocks,
                 local: false,
             },
-            "agent" => EntryKind::Agent { text, message_id },
-            _ => EntryKind::Thought { text, message_id },
+            "agent" => EntryKind::Agent {
+                text,
+                message_id,
+                blocks,
+            },
+            _ => EntryKind::Thought {
+                text,
+                message_id,
+                blocks,
+            },
         });
     }
 
@@ -423,6 +516,31 @@ impl Model {
                     self.push(EntryKind::Plan(plan));
                 }
             }
+            SessionUpdate::UsageUpdate(usage) => self.content.usage = Some(usage),
+            #[cfg(feature = "unstable_session_notices")]
+            SessionUpdate::Notice(notice) => self.content.notices.push(notice),
+            #[cfg(feature = "unstable_plan_operations")]
+            SessionUpdate::PlanUpdate(update) => self.plan_update(update.plan),
+            #[cfg(feature = "unstable_plan_operations")]
+            SessionUpdate::PlanRemoved(removed) => {
+                self.transcript.retain(|entry| !matches!(&entry.kind,
+                    EntryKind::IdentifiedPlan(plan) if plan_id(plan) == Some(&removed.plan_id)));
+            }
+            #[cfg(feature = "unstable_session_compaction")]
+            SessionUpdate::CompactionUpdate(update) => self.compaction_update(update),
+            #[cfg(feature = "unstable_session_compaction")]
+            SessionUpdate::CompactionSummaryChunk(chunk) => {
+                if let Some(Entry { kind: EntryKind::Compaction { summary, .. }, .. }) = self.transcript.iter_mut().find(|entry|
+                    matches!(&entry.kind, EntryKind::Compaction { id, status: agent_client_protocol::schema::v1::CompactionStatus::InProgress, .. } if id == &chunk.compaction_id)) {
+                    content::append_text(summary, chunk.content);
+                }
+            }
+            #[cfg(feature = "unstable_subagents")]
+            SessionUpdate::SubagentUpdate(update) => self.subagent_update(update),
+            #[cfg(feature = "unstable_subagents")]
+            SessionUpdate::SessionMessage(message) => self.session_message(message),
+            #[cfg(feature = "unstable_subagents")]
+            SessionUpdate::SessionMessageChunk(chunk) => self.session_message_chunk(chunk),
             other => self.debug_updates.push(
                 (match &other {
                     SessionUpdate::AvailableCommandsUpdate(_) => "available_commands_update",
@@ -444,7 +562,7 @@ impl Model {
     }
 
     pub fn oldest_permission(&self) -> Option<&PendingPermission> {
-        self.permissions.front()
+        self.visible_permission()
     }
 
     pub fn reject_once(&self) -> Option<agent_client_protocol::schema::v1::PermissionOptionId> {

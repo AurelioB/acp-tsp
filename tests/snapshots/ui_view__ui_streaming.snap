@@ -19,11 +19,11 @@ expression: wire(&model)
         },
         "c": [
           {
-            "id": "main.entry.1.body",
+            "id": "main.entry.1.body.0",
             "k": "md",
             "p": {
               "text": "Fix it",
-              "key": "body"
+              "key": "body.0"
             }
           }
         ]
@@ -39,12 +39,11 @@ expression: wire(&model)
         },
         "c": [
           {
-            "id": "main.entry.2.body",
+            "id": "main.entry.2.body.0",
             "k": "md",
             "p": {
               "text": "Investigating",
-              "key": "body",
-              "tone": "muted"
+              "key": "body.0"
             }
           }
         ]

@@ -149,15 +149,49 @@ pub fn permission(id: u64, option_id: PermissionOptionId) -> UiCmd {
 }
 
 pub fn submit(model: &mut Model, composer: &mut Composer) -> Action {
+    if composer.text.trim().is_empty() {
+        return Action::None;
+    }
+    let prompt = if let Some(session) = &model.session {
+        match super::attach::prompt(
+            &composer.text,
+            &session.cwd,
+            &session.additional_dirs,
+            Some(&model.prompt_capabilities),
+        ) {
+            Ok(blocks) => blocks,
+            Err(error) => {
+                model.errors.push(format!("Cannot attach file: {error}"));
+                return Action::Changed;
+            }
+        }
+    } else {
+        vec![agent_client_protocol::schema::v1::ContentBlock::Text(
+            agent_client_protocol::schema::v1::TextContent::new(composer.text.clone()),
+        )]
+    };
     let Some(text) = composer.take() else {
         return Action::None;
     };
-    model.submitted(text.clone());
-    Action::Command(UiCmd::Prompt(vec![
-        agent_client_protocol::schema::v1::ContentBlock::Text(
-            agent_client_protocol::schema::v1::TextContent::new(text),
-        ),
-    ]))
+    model.submitted(text);
+    if let Some(crate::model::Entry {
+        kind: crate::model::EntryKind::User { blocks, .. },
+        ..
+    }) = model.transcript.last_mut()
+    {
+        blocks.extend(
+            prompt
+                .iter()
+                .filter(|block| {
+                    matches!(
+                        block,
+                        agent_client_protocol::schema::v1::ContentBlock::ResourceLink(_)
+                    )
+                })
+                .cloned(),
+        );
+    }
+    Action::Command(UiCmd::Prompt(prompt))
 }
 
 #[cfg(test)]

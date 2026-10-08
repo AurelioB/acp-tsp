@@ -12,26 +12,56 @@ use tern_sdk::{
 use super::{Msg, auth, composer::Composer, prefs};
 use crate::model::{EntryKind, Model, Turn};
 
-pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Msg> {
+pub fn view(model: &Model, composer: &Composer, caps: &Capabilities) -> View<Msg> {
+    view_with(
+        model,
+        composer,
+        caps,
+        &super::elicit::FormState::default(),
+        None,
+    )
+}
+
+pub fn view_with(
+    model: &Model,
+    composer: &Composer,
+    _caps: &Capabilities,
+    form: &super::elicit::FormState,
+    picker: Option<&super::attach::AttachPicker>,
+) -> View<Msg> {
     let mut main = ui::col().key("transcript");
     for entry in &model.transcript {
         let key = format!("entry.{}", entry.id);
         let node: Node<Msg> = match &entry.kind {
-            EntryKind::User { text, .. } => ui::card()
-                .key(key)
-                .tone("user")
-                .child(ui::md(text.clone()).key("body"))
-                .into(),
-            EntryKind::Agent { text, .. } => ui::md(text.clone())
-                .key(key)
-                .stream(model.is_streaming(entry))
-                .into(),
-            EntryKind::Thought { text, .. } => ui::section()
+            EntryKind::User { blocks, .. } => {
+                let mut card = ui::card().key(key).tone("user");
+                for node in super::content::blocks(blocks, "body", model) {
+                    card = card.child(node);
+                }
+                card.into()
+            }
+            EntryKind::Agent { blocks, .. } => {
+                if blocks.len() == 1 && matches!(blocks.first(), Some(ContentBlock::Text(_))) {
+                    let ContentBlock::Text(text) = &blocks[0] else {
+                        unreachable!()
+                    };
+                    ui::md(text.text.clone())
+                        .key(key)
+                        .stream(model.is_streaming(entry))
+                        .into()
+                } else {
+                    ui::col()
+                        .key(key)
+                        .children(super::content::blocks(blocks, "body", model))
+                        .into()
+                }
+            }
+            EntryKind::Thought { blocks, .. } => ui::section()
                 .key(key)
                 .head("Thinking")
                 .collapsible(true)
                 .collapsed(!model.is_streaming(entry))
-                .child(ui::md(text.clone()).key("body").tone("muted"))
+                .children(super::content::blocks(blocks, "body", model))
                 .into(),
             EntryKind::Tool { call, cancelled } => {
                 // Tern chooses its tool glyph from `name`; normalize ACP kinds
@@ -88,20 +118,14 @@ pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Ms
                                 }])
                                 .into()
                         }
-                        ToolCallContent::Content(content) => match &content.content {
-                            ContentBlock::Text(text) => ui::md(text.text.clone()).key(i).into(),
-                            ContentBlock::ResourceLink(link) => {
-                                ui::md(crate::model::resource_link_markdown(&link.name, &link.uri))
-                                    .key(i)
-                                    .into()
-                            }
-                            _ => ui::code("Unsupported tool content").key(i).into(),
-                        },
-                        ToolCallContent::Terminal(terminal) => {
-                            ui::code(format!("Terminal {}", terminal.terminal_id))
-                                .key(i)
-                                .into()
+                        ToolCallContent::Content(content) => {
+                            super::content::block(&content.content, format!("{i}"), model)
                         }
+                        ToolCallContent::Terminal(terminal) => super::content::terminal(
+                            &terminal.terminal_id,
+                            model.content.terminals.get(&terminal.terminal_id),
+                            format!("{i}"),
+                        ),
                         _ => ui::code("Unsupported tool content").key(i).into(),
                     };
                     tool = tool.child(body);
@@ -155,6 +179,112 @@ pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Ms
                     }])
                     .into()
             }
+            #[cfg(feature = "unstable_plan_operations")]
+            EntryKind::IdentifiedPlan(plan) => match plan {
+                agent_client_protocol::schema::v1::PlanUpdateContent::Items(items) => {
+                    let tasks = items
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .map(|(i, task)| ChecklistItem {
+                            id: format!("task.{i}"),
+                            text: task.content.clone().into(),
+                            status: Some(match task.status {
+                                PlanEntryStatus::Pending => ItemStatus::Pending,
+                                PlanEntryStatus::InProgress => ItemStatus::Active,
+                                PlanEntryStatus::Completed => ItemStatus::Done,
+                                _ => ItemStatus::Pending,
+                            }),
+                            note: None,
+                        })
+                        .collect();
+                    ui::checklist()
+                        .key(key)
+                        .phases(vec![Phase {
+                            id: items.plan_id.to_string(),
+                            title: Some("Plan".into()),
+                            items: tasks,
+                            collapsed: None,
+                        }])
+                        .into()
+                }
+                agent_client_protocol::schema::v1::PlanUpdateContent::Markdown(markdown) => {
+                    ui::md(markdown.content.clone()).key(key).into()
+                }
+                agent_client_protocol::schema::v1::PlanUpdateContent::File(file) => {
+                    ui::md(crate::model::resource_link_markdown("Plan", &file.uri))
+                        .key(key)
+                        .into()
+                }
+                _ => ui::text("Unsupported plan").key(key).into(),
+            },
+            #[cfg(feature = "unstable_session_compaction")]
+            EntryKind::Compaction {
+                status,
+                summary,
+                error,
+                ..
+            } => {
+                let mut section = ui::section()
+                    .key(key)
+                    .head("Context compacted")
+                    .collapsible(true)
+                    .collapsed(false);
+                if matches!(
+                    status,
+                    agent_client_protocol::schema::v1::CompactionStatus::InProgress
+                ) {
+                    section = section.child(ui::spinner().key("progress").label("Compacting"));
+                }
+                for block in super::content::blocks(summary, "summary", model) {
+                    section = section.child(block);
+                }
+                if let Some(error) = error {
+                    section = section.child(ui::text(error.clone()).key("error"));
+                }
+                section.into()
+            }
+            #[cfg(feature = "unstable_subagents")]
+            EntryKind::Subagent {
+                title,
+                state,
+                messages,
+                ..
+            } => {
+                let mut agent = ui::agent(title.clone())
+                    .key(key)
+                    .depth(1_u32)
+                    .collapsible(true)
+                    .status(
+                        if matches!(
+                            state,
+                            Some(agent_client_protocol::schema::v1::StateUpdate::Running(_))
+                        ) {
+                            tern_sdk::ui::AgentStatus::Running
+                        } else {
+                            tern_sdk::ui::AgentStatus::Idle
+                        },
+                    );
+                for (index, message) in messages.iter().enumerate() {
+                    if let agent_client_protocol::schema::MaybeUndefined::Value(blocks) =
+                        &message.content
+                    {
+                        for block in
+                            super::content::blocks(blocks, &format!("message.{index}"), model)
+                        {
+                            agent = agent.child(block);
+                        }
+                    }
+                }
+                agent.into()
+            }
+            #[cfg(feature = "unstable_end_turn_token_usage")]
+            EntryKind::Usage(usage) => ui::text(format!(
+                "Tokens: {} input · {} output · {} total",
+                usage.input_tokens, usage.output_tokens, usage.total_tokens
+            ))
+            .key(key)
+            .into(),
         };
         main = main.child(node);
     }
@@ -173,6 +303,21 @@ pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Ms
                 .tone("muted")
                 .child(ui::md(notice.clone()).key("body")),
         );
+    }
+    #[cfg(feature = "unstable_session_notices")]
+    for (i, notice) in model.content.notices.iter().enumerate() {
+        let tone = match notice.severity {
+            agent_client_protocol::schema::v1::NoticeSeverity::Warning => "warning",
+            agent_client_protocol::schema::v1::NoticeSeverity::Error => "error",
+            _ => "info",
+        };
+        let mut toast = ui::toast(notice.title.clone())
+            .key(format!("agent.notice.{i}"))
+            .tone(tone);
+        if let Some(description) = &notice.description {
+            toast = toast.sub(description.clone());
+        }
+        main = main.child(toast);
     }
 
     let title = model
@@ -227,8 +372,22 @@ pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Ms
     if !model.status.is_empty() {
         bar = bar.child(ui::seg(model.status.clone()).key("status"));
     }
-    let blocked =
-        model.oldest_permission().is_some() || model.auth.is_some() || model.exited.is_some();
+    if let Some(usage) = &model.content.usage {
+        bar = bar.child(
+            ui::meter()
+                .key("context")
+                .value(if usage.size == 0 {
+                    0.0
+                } else {
+                    (usage.used as f64 / usage.size as f64).clamp(0.0, 1.0)
+                })
+                .label(format!("{} / {} tokens", usage.used, usage.size)),
+        );
+        if let Some(cost) = &usage.cost {
+            bar = bar.child(ui::seg(format!("{} {:.2}", cost.currency, cost.amount)).key("cost"));
+        }
+    }
+    let blocked = model.dialogs.front().is_some() || model.auth.is_some() || model.exited.is_some();
     let dock = ui::col().child(bar).child(
         ui::editor()
             .key("ed")
@@ -243,7 +402,11 @@ pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Ms
             .on_focus(Msg::Focus),
     );
     let mut result = View::new().main(main).dock(dock);
-    if let Some(permission) = model.oldest_permission() {
+    if let Some(picker) = picker.filter(|p| p.open) {
+        result = result.layer(picker.view());
+    } else if let Some(request) = model.oldest_elicitation() {
+        result = result.layer(super::elicit::dialog(request.id, &request.request, form));
+    } else if let Some(permission) = model.visible_permission() {
         let id = permission.id;
         let title = permission
             .request

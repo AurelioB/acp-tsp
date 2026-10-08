@@ -1,0 +1,132 @@
+---
+source: tests/ui_content_view.rs
+expression: "wire(&model)[\"layer\"]"
+---
+{
+  "id": "layer",
+  "k": "col",
+  "c": [
+    {
+      "id": "layer.elicitation",
+      "k": "card",
+      "p": {
+        "key": "elicitation",
+        "head": "Agent request"
+      },
+      "c": [
+        {
+          "id": "layer.elicitation.message",
+          "k": "md",
+          "p": {
+            "text": "What should I use?",
+            "key": "message"
+          }
+        },
+        {
+          "id": "layer.elicitation.form",
+          "k": "el",
+          "p": {
+            "tag": "form",
+            "key": "form"
+          },
+          "c": [
+            {
+              "id": "layer.elicitation.form.count",
+              "k": "el",
+              "p": {
+                "tag": "div",
+                "key": "count"
+              },
+              "c": [
+                {
+                  "id": "layer.elicitation.form.count.label",
+                  "k": "el",
+                  "p": {
+                    "tag": "p",
+                    "text": "count",
+                    "key": "label"
+                  }
+                },
+                {
+                  "id": "layer.elicitation.form.count.field.count",
+                  "k": "input",
+                  "p": {
+                    "key": "field.count",
+                    "text": "",
+                    "cursor": 0,
+                    "placeholder": "count"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "layer.elicitation.form.name",
+              "k": "el",
+              "p": {
+                "tag": "div",
+                "key": "name"
+              },
+              "c": [
+                {
+                  "id": "layer.elicitation.form.name.label",
+                  "k": "el",
+                  "p": {
+                    "tag": "p",
+                    "text": "Your name",
+                    "key": "label"
+                  }
+                },
+                {
+                  "id": "layer.elicitation.form.name.field.name",
+                  "k": "input",
+                  "p": {
+                    "key": "field.name",
+                    "text": "",
+                    "cursor": 0,
+                    "placeholder": "Your name"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "layer.elicitation.accept",
+          "k": "el",
+          "p": {
+            "tag": "button",
+            "text": "Accept",
+            "key": "accept",
+            "actions": {
+              "click": "click"
+            }
+          }
+        },
+        {
+          "id": "layer.elicitation.decline",
+          "k": "el",
+          "p": {
+            "tag": "button",
+            "text": "Decline",
+            "key": "decline",
+            "actions": {
+              "click": "click"
+            }
+          }
+        },
+        {
+          "id": "layer.elicitation.cancel",
+          "k": "el",
+          "p": {
+            "tag": "button",
+            "text": "Cancel",
+            "key": "cancel",
+            "actions": {
+              "click": "click"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
