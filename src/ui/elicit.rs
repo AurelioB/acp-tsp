@@ -335,7 +335,10 @@ pub fn normalized(
 }
 
 pub fn dialog(id: PendingId, request: &CreateElicitationRequest, state: &FormState) -> Node<Msg> {
-    let mut card = ui::card()
+    // A modal overlay: a plain card in `layer` floats over the transcript without a backdrop.
+    let mut card = ui::overlay()
+        .modal(true)
+        .size(ui::OverlaySize::Lg)
         .key("elicitation")
         .head("Agent request")
         .child(ui::md(request.message.clone()).key("message"));

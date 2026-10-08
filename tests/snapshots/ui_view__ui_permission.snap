@@ -59,8 +59,9 @@ expression: wire(&model)
     "c": [
       {
         "id": "layer.permission",
-        "k": "card",
+        "k": "overlay",
         "p": {
+          "modal": true,
           "key": "permission",
           "head": "Run tests"
         },

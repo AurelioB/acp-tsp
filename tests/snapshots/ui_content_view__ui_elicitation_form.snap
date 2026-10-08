@@ -8,8 +8,10 @@ expression: "wire(&model)[\"layer\"]"
   "c": [
     {
       "id": "layer.elicitation",
-      "k": "card",
+      "k": "overlay",
       "p": {
+        "modal": true,
+        "size": "lg",
         "key": "elicitation",
         "head": "Agent request"
       },

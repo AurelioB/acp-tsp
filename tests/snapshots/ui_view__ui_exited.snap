@@ -59,8 +59,9 @@ expression: wire(&model)
     "c": [
       {
         "id": "layer.exited",
-        "k": "card",
+        "k": "overlay",
         "p": {
+          "modal": true,
           "key": "exited",
           "head": "Agent exited"
         },

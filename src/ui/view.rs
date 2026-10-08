@@ -421,7 +421,7 @@ pub fn view_with(
             .title
             .clone()
             .unwrap_or_else(|| "Tool permission".into());
-        let mut dialog = ui::card().key("permission").head(title);
+        let mut dialog = ui::overlay().modal(true).key("permission").head(title);
         for (i, option) in permission.request.options.iter().enumerate() {
             dialog = dialog.child(
                 html::button(format!("{}. {}", i + 1, option.name))
@@ -437,7 +437,8 @@ pub fn view_with(
     } else if let Some(reason) = &model.exited {
         result = result.layer(
             ui::col().child(
-                ui::card()
+                ui::overlay()
+                    .modal(true)
                     .key("exited")
                     .head("Agent exited")
                     .child(ui::md(reason.clone()).key("reason"))
