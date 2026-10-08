@@ -90,7 +90,9 @@ Acceptance: CI green on `main`; spike results recorded in this file.
 - Wake: `bus::WakeTerm` polls stdin plus a socketpair and injects a synthetic `{"ev":"wake"}` TSP event, so `Session::next(None)` returns as soon as ACP sends an event. Measured in a real Tern 0.6.2 pane (`tern new session … -- spike`): 400 events at 2 ms spacing, p50 0.049 ms, p99 0.132 ms, max 0.160 ms send→drain, no polling tick. R1 closed.
 - Tern 0.6.2 `hello` features: `blobs settle adopt dock program-palette reduce-motion aside scroll styles flow`.
 - Real `initialize` responses (clientCapabilities fs+terminal): `claude-agent-acp` 0.87.0 → `loadSession`, image+embeddedContext, MCP http+sse, `auth.logout`, `providers`, session `additionalDirectories close delete fork list resume subagents`, `_meta.claudeCode.promptQueueing`, `_meta.steering.supported`, **no `authMethods`** unless `auth.terminal` is advertised; `codex-acp` 2.1.1 → same session caps, MCP http only (`acp:false`), authMethods `api-key`, `chat-gpt`. Both push `_auth/status_update` right after `initialize` (contains account e-mail: never log raw wire by default).
-- e2e harness: `tern new session <name> --cwd DIR -- CMD` runs a program in a hidden session of the current window; `tern capture <block> --surfaces` reads surface text; `tern kill session <name>` cleans up.
+- e2e harness: a hidden `tern new session` pane is never drawn by a window, so no `ack`s arrive and nothing renders. Headless `tern serve` does draw TSP surfaces in its shell pane (acks arrive, `tern ctl tree` exposes surface text; `ctl type`/`ctl key` drive the composer). Wrapped as `scripts/tern-e2e.sh`. Limits: headless ignores `settings.json` (agent blocks run the user's default `omp`), and Ctrl combinations don't reach the pty.
+
+**Stage 1 live smoke (2026-10-08, headless Tern 0.6.2):** Claude 0.87.0 — prompt → `Read` tool card with output → answer. Codex 2.1.1 — command tool call + answer; with `INITIAL_AGENT_MODE=read-only` the permission dialog shows the agent's 3 options, `1` approves and the file is written; Escape during a 60 s command ends the turn `Cancelled`.
 
 ### Stage 1 — Basics (usable chat with Claude and Codex)
 
