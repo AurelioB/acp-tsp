@@ -66,7 +66,41 @@ Terminal commands requested by the agent inherit the user's privileges. Session 
 the *working directory* only: terminal commands are **not sandboxed** and can access files
 outside those roots.
 
-Built-in adapters are pinned: Claude `@agentclientprotocol/claude-agent-acp@0.87.0`, Codex `@agentclientprotocol/codex-acp@2.1.1`. The agy ACP server is not bundled; installation support is planned for Stage 3.
+Built-in adapters are pinned: Claude `@agentclientprotocol/claude-agent-acp@0.87.0`, Codex `@agentclientprotocol/codex-acp@2.1.1`.
+
+## agy (Google Antigravity)
+
+The ACP registry's `antigravity-acp` entry installs Google's separate ACP server binary (not
+the `agy` CLI). Install it with:
+
+```sh
+acp-tsp agents install agy
+# Non-interactive install:
+acp-tsp agents install agy --yes
+acp-tsp agents
+acp-tsp agents auth agy --type oauth-personal
+```
+
+The installer downloads the current registry release for your OS/architecture, verifies its
+SHA-256 when published, and stores the server under `$XDG_DATA_HOME/acp-tsp/agents/agy/`
+(default `~/.local/share/acp-tsp/agents/agy/`). It records the registry command and arguments
+in a manifest and updates `current`. The binary is proprietary: Google's
+[Antigravity FAQ](https://antigravity.google/docs/faq) says use of third-party software to
+access Antigravity may violate its Terms of Service. The installer displays this warning and
+requires confirmation (or `--yes`).
+
+Choose an auth method with `acp-tsp agents auth agy --type oauth-personal|gemini-api-key|oauth-business|agent-platform`.
+`oauth-personal` performs a one-time browser login on the first session. `gemini-api-key` reads
+`GEMINI_API_KEY` from the environment. Auth settings are merged into
+`~/.gemini/antigravity-acp/settings.json`; an existing file is backed up before replacement.
+
+`acp-tsp agents update` compares registry versions with the pinned Claude/Codex presets;
+`--write` records updated adapter package versions as per-agent config overrides.
+
+Host-specific limitation: the registry's agy server `1.3.0` currently exits with `SIGILL`
+on this Proxmox LXC host (Intel i5-13600K exposed without AVX-512), including `--help`.
+`acp-tsp probe --agent agy` therefore reports failure here. This is a host/binary compatibility
+issue, not a general agy requirement.
 
 ## Keys
 
