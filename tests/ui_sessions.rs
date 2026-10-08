@@ -266,3 +266,30 @@ fn pasted_client_command_runs_on_enter_instead_of_prompting() {
     );
     assert!(!cmds.iter().any(|cmd| matches!(cmd, UiCmd::Prompt(_))));
 }
+
+#[test]
+fn shift_tab_cycles_to_the_next_mode() {
+    let modes = agent_client_protocol::schema::v1::SessionModeState::new(
+        "ask",
+        vec![
+            agent_client_protocol::schema::v1::SessionMode::new("ask", "Ask"),
+            agent_client_protocol::schema::v1::SessionMode::new("code", "Code"),
+        ],
+    );
+    let (_, cmds) = drive(
+        b"\x1b[Z\x04",
+        Some(BridgeEvent::SessionStarted {
+            session_id: "s".into(),
+            kind: SessionStartKind::New,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            modes: Some(modes),
+            config_options: None,
+        }),
+    );
+    assert!(
+        cmds.iter()
+            .any(|cmd| matches!(cmd, UiCmd::SetMode(id) if id.0.as_ref() == "code")),
+        "got {cmds:?}"
+    );
+}

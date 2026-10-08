@@ -251,8 +251,7 @@ fn run_with_controller(
                 } else if model.dialogs.front().is_none()
                     && model.auth.is_none()
                     && model.exited.is_none()
-                    && key.is("tab")
-                    && key.shift
+                    && key.is("shift+tab")
                 {
                     model.next_mode().map_or(Action::None, Action::Command)
                 } else if key.is("enter")
