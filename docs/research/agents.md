@@ -280,3 +280,9 @@ Legend: **Y**=yes, **P**=partial/conditional, **N**=no, **?**=unknown/undocument
 - Exact `agy_acp_server` capability JSON, method set, modes, commands, and extensions — could not fetch the proprietary binary. [INFERENCE] It likely implements a Gemini-CLI-like surface (initialize/session new/load/prompt/cancel/setSessionMode + fs proxy + MCP), given shared lineage, but this is unverified.
 - Local `codex`/`claude` binaries were not executed (no shell tool in this agent), so their `--help` output and any hidden `acp` subcommand were not directly inspected; the "no native ACP" conclusions rest on the cited open issues and community statements.
 - codex-acp version numbering is inconsistent across indexes (npm 1.1.0 vs unpkg 2.0.0); verify against the release you install.
+
+## 7. Local verification (2026-10-08)
+
+- `codex-cli 0.160.0` and `claude 2.1.291` `--help`: no ACP flag or subcommand (confirms adapters are required).
+- Adapters `claude-agent-acp` 0.87.0 and `codex-acp` 2.1.1 answer `initialize` as summarised in `docs/PLAN.md` (Stage 0 results).
+- agy: registry archive `agy-acp-server-1.3.0-linux-x86_64.zip` (sha256 `9fb60956af0a9d76220a4db91ca9ac88e2a2372ad68f985ab5fceace6b825b96`, 334 MB) contains `agy_acp_server.par` (927 MB ELF) and `localharness_external`. On this host (Proxmox LXC, Intel i5-13600K, AVX2 but no AVX-512) `agy_acp_server.par` dies with `SIGILL` (`ILL_ILLOPN`) right after reading `/sys/devices/system/cpu/online`, even for `--help`, so its `initialize` response could not be captured here. [INFERENCE] the binary targets a newer x86-64 level or a CPU feature the host lacks; probe it with `acp-tsp probe --agent agy` on another machine.
