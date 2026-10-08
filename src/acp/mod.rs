@@ -142,6 +142,18 @@ impl Recorder {
     }
 }
 
+/// Keys whose values are credentials or personal data in ACP traffic: account e-mails,
+/// API keys and tokens, and MCP server `env`/`headers` (which carry secrets).
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    matches!(key.as_str(), "email" | "env" | "headers" | "authorization")
+        || [
+            "token", "secret", "password", "apikey", "api_key", "api-key",
+        ]
+        .iter()
+        .any(|needle| key.contains(needle))
+}
+
 fn redact(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(fields) => {
@@ -151,7 +163,7 @@ fn redact(value: &mut serde_json::Value) {
                 fields.insert("params".into(), serde_json::json!({"redacted": true}));
             }
             for (key, child) in fields {
-                if key.eq_ignore_ascii_case("email") {
+                if is_secret_key(key) {
                     *child = serde_json::Value::String("[redacted]".into());
                 } else {
                     redact(child);
@@ -415,13 +427,7 @@ async fn drive(
             }
             let methods = init.auth_methods.clone();
             let caps = init.agent_capabilities.clone();
-            let steering = init
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.get("steering"))
-                .and_then(|steering| steering.get("supported"))
-                .and_then(serde_json::Value::as_bool)
-                == Some(true);
+            let steering = crate::quirks::steering(&init);
             if caps.session_capabilities.additional_directories.is_some() {
                 let mut roots = vec![options.cwd.clone()];
                 roots.extend(options.additional_dirs.clone());
@@ -519,5 +525,25 @@ mod recorder_tests {
             serde_json::json!({"result": {"account": {"email": "private@example.invalid"}}});
         redact(&mut other);
         assert_eq!(other["result"]["account"]["email"], "[redacted]");
+    }
+
+    #[test]
+    fn credentials_in_session_setup_and_auth_never_reach_recordings() {
+        let mut new_session = serde_json::json!({
+            "method": "session/new",
+            "params": {"cwd": "/w", "mcpServers": [
+                {"name": "s", "command": "x", "args": [], "env": [{"name": "TOKEN", "value": "s3cret"}]},
+                {"type": "http", "name": "h", "url": "https://h", "headers": [{"name": "Authorization", "value": "Bearer s3cret"}]}
+            ]}
+        });
+        let mut auth = serde_json::json!({
+            "method": "authenticate",
+            "params": {"methodId": "api-key", "_meta": {"api-key": {"apiKey": "sk-s3cret"}}}
+        });
+        redact(&mut new_session);
+        redact(&mut auth);
+        let text = format!("{new_session}{auth}");
+        assert!(!text.contains("s3cret"), "{text}");
+        assert_eq!(new_session["params"]["cwd"], "/w");
     }
 }

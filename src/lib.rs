@@ -12,5 +12,6 @@ pub mod event;
 pub mod host;
 pub mod launch;
 pub mod model;
+pub mod quirks;
 pub mod tern_settings;
 pub mod ui;

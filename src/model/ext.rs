@@ -138,11 +138,7 @@ fn append_bounded(output: &mut String, text: &str, truncated: &mut bool) {
 
 impl ExtensionState {
     pub fn initialized(&mut self, init: &agent_client_protocol::schema::v1::InitializeResponse) {
-        self.steering = init
-            .meta
-            .as_ref()
-            .and_then(|m| field::<Steering>(m, "steering"))
-            .is_some_and(|s| s.supported);
+        self.steering = crate::quirks::steering(init);
         self.auth_advertised = init
             .agent_capabilities
             .meta
