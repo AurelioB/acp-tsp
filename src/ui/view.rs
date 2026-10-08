@@ -625,7 +625,7 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
                 })
                 .value(ratio)
                 .label(format!("{:.0}%", ratio * 100.0))
-                .total(format!("{} tokens", usage.size))
+                .total(compact_tokens(usage.size))
                 .title(format!(
                     "Context: {} of {} tokens ({:.0}%)",
                     usage.used,
@@ -795,9 +795,27 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
     dock.child(editor.child(bar)).into()
 }
 
+/// Token counts the way omp's context meter shows them: `1M`, `258K`, `950`.
+fn compact_tokens(count: u64) -> String {
+    match count {
+        n if n >= 1_000_000 && n % 1_000_000 == 0 => format!("{}M", n / 1_000_000),
+        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1_000_000.0),
+        n if n >= 1_000 => format!("{}K", (n + 500) / 1_000),
+        n => n.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_totals_read_like_omp() {
+        assert_eq!(compact_tokens(1_000_000), "1M");
+        assert_eq!(compact_tokens(1_500_000), "1.5M");
+        assert_eq!(compact_tokens(258_400), "258K");
+        assert_eq!(compact_tokens(950), "950");
+    }
 
     #[test]
     fn editor_id_matches_the_rendered_composer() {
