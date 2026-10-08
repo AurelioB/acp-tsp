@@ -219,6 +219,9 @@ expression: wire(&model)
           "frame": "inline",
           "collapsible": false,
           "collapsed": false,
+          "target": "/tmp/main.rs",
+          "targetKind": "path",
+          "href": "file:///tmp/main.rs",
           "age": 0
         },
         "c": [

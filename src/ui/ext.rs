@@ -8,6 +8,23 @@ use tern_sdk::ui::{
 use super::Msg;
 use crate::model::{EntryKind, Model};
 
+/// The verb omp shows for a tool, when the tool has a fixed one.
+fn title_for(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "bash" => "Bash",
+        "read" => "Read",
+        "edit" => "Edit",
+        "write" => "Write",
+        "glob" => "Glob",
+        "grep" => "Grep",
+        "find" => "Find",
+        "fetch" => "Fetch",
+        "web" => "Web",
+        "task" => "Task",
+        _ => return None,
+    })
+}
+
 /// Tern's built-in tool cards are keyed by the `omp.tool.*` role and their head props.
 pub fn tool(
     call: &ToolCall,
@@ -43,6 +60,17 @@ pub fn tool(
             _ => "generic",
         },
     };
+    // Codex runs every shell command as `exec_command` and labels it by intent (`kind: read`
+    // + "List files"), with no path: it is a command with output, not a file read.
+    let name = if claude_name.is_none()
+        && matches!(
+            call.name.as_deref(),
+            Some("exec_command" | "shell" | "local_shell" | "bash")
+        ) {
+        "bash"
+    } else {
+        name
+    };
     let status = if cancelled {
         Status::Cancelled
     } else {
@@ -66,7 +94,13 @@ pub fn tool(
         .locations
         .first()
         .map(|location| location.path.display().to_string())
-        .or_else(|| arg(&["file_path", "path", "filePath"]).map(str::to_owned));
+        .or_else(|| arg(&["file_path", "path", "filePath"]).map(str::to_owned))
+        .or_else(|| {
+            call.content.iter().find_map(|content| match content {
+                ToolCallContent::Diff(diff) => Some(diff.path.display().to_string()),
+                _ => None,
+            })
+        });
     let target = match name {
         "bash" => arg(&["command", "cmd"])
             .map(str::to_owned)
@@ -84,20 +118,14 @@ pub fn tool(
         "glob" | "grep" => arg(&["pattern", "glob", "query"]).map(str::to_owned),
         "find" | "web" | "fetch" => arg(&["query", "url", "pattern"]).map(str::to_owned),
         _ => None,
-    };
-    let title = match name {
-        "bash" => "Bash",
-        "read" => "Read",
-        "edit" => "Edit",
-        "write" => "Write",
-        "glob" => "Glob",
-        "grep" => "Grep",
-        "find" => "Find",
-        "fetch" => "Fetch",
-        "web" => "Web",
-        "task" => "Task",
-        _ => &call.title,
-    };
+    }
+    // Without a path or argument the agent's own title is the most specific label we have.
+    .or_else(|| {
+        title_for(name)
+            .filter(|verb| *verb != call.title)
+            .map(|_| call.title.clone())
+    });
+    let title = title_for(name).unwrap_or(&call.title);
     let mut node = ui::tool(name)
         .key(key)
         .role(format!("omp.tool.{name}"))
@@ -117,6 +145,14 @@ pub fn tool(
             "glob" | "grep" => TargetKind::Pattern,
             "find" | "web" | "fetch" => TargetKind::Query,
             _ => TargetKind::Text,
+        };
+        let target_kind = if name != "bash"
+            && path.is_none()
+            && arg(&["pattern", "glob", "query", "url"]).is_none()
+        {
+            TargetKind::Text
+        } else {
+            target_kind
         };
         node = node.target(target).target_kind(target_kind);
     }

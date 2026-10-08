@@ -138,6 +138,8 @@ expression: "wire(&model)[\"main\"]"
         "frame": "inline",
         "collapsible": false,
         "collapsed": false,
+        "target": "Investigating",
+        "targetKind": "text",
         "age": 0
       },
       "c": [
@@ -163,6 +165,8 @@ expression: "wire(&model)[\"main\"]"
                 "frame": "inline",
                 "collapsible": false,
                 "collapsed": false,
+                "target": "Read child file",
+                "targetKind": "text",
                 "age": 0
               }
             }

@@ -283,3 +283,26 @@ fn completed_turn_usage_is_part_of_the_last_assistant_message() {
     );
     assert!(!doc["main"].to_string().contains("Tokens:"));
 }
+
+#[test]
+fn codex_exec_command_renders_as_a_shell_card_with_its_output() {
+    // Codex labels every shell command by intent (`kind: read`, "List files") with no path.
+    let mut model = Model::default();
+    let mut call = ToolCall::new("exec-1", "List files")
+        .kind(ToolKind::Read)
+        .status(agent_client_protocol::schema::v1::ToolCallStatus::Completed)
+        .content(vec![ToolCallContent::from("a\nb\n")]);
+    call.name = Some("exec_command".into());
+    update(&mut model, SessionUpdate::ToolCall(call));
+    let doc = wire(&model);
+    let tool = doc["main"]["c"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["k"] == "tool")
+        .unwrap();
+    assert_eq!(tool["p"]["role"], "omp.tool.bash");
+    assert_eq!(tool["p"]["target"], "List files");
+    assert_eq!(tool["c"][0]["k"], "ansi");
+    assert_eq!(tool["c"][0]["p"]["text"], "a\nb\n");
+}
