@@ -180,7 +180,7 @@ fn claude_plan_permission_and_rate_warning() {
 }
 
 #[test]
-fn quota_metadata_updates_dock_meter_without_invented_limit() {
+fn quota_metadata_does_not_duplicate_the_context_meter() {
     let mut model = Model::default();
     update(
         &mut model,
@@ -188,8 +188,8 @@ fn quota_metadata_updates_dock_meter_without_invented_limit() {
         "_meta":{"quota":{"token_count":{"totalTokens":501,"inputTokens":450},"model_usage":[]}}}),
     );
     assert_eq!(model.ext.quota_tokens, Some(501));
+    // Tern hides status segments that don't fit: one token meter, no invented quota limit.
     let dock = wire(&model)["dock"].to_string();
-    assert!(dock.contains("501 tokens spent"));
-    assert!(dock.contains("limit not reported"));
-    assert!(dock.contains("\"k\":\"meter\""));
+    assert!(dock.contains("200 / 1000 tokens"));
+    assert_eq!(dock.matches("\"k\":\"meter\"").count(), 1);
 }

@@ -269,10 +269,12 @@ pub fn view_with(
     } else {
         "Starting"
     };
-    let mut bar = ui::status()
-        .key("bar")
-        .child(ui::seg(title).key("agent"))
-        .child(ui::seg(state).key("state"));
+    // Tern's status bar hides segments that don't fit, so keep it to what changes decisions:
+    // the connection state only while it is not simply connected.
+    let mut bar = ui::status().key("bar").child(ui::seg(title).key("agent"));
+    if state != "Connected" {
+        bar = bar.child(ui::seg(state).key("state"));
+    }
     if let Some(session) = &model.session {
         if let Some(title) = &session.title {
             bar = bar.child(ui::seg(title.clone()).key("session"));
@@ -306,7 +308,10 @@ pub fn view_with(
     if model.queued > 0 {
         bar = bar.child(ui::seg(format!("{} queued", model.queued)).key("queue"));
     }
-    if !model.status.is_empty() && !matches!(model.turn, Turn::Running { .. }) {
+    if !model.status.is_empty()
+        && model.status != "Ready"
+        && !matches!(model.turn, Turn::Running { .. })
+    {
         bar = bar.child(ui::seg(model.status.clone()).key("status"));
     }
     if let Some(auth) = &model.ext.auth
@@ -318,15 +323,12 @@ pub fn view_with(
                 .on_click(Msg::AccountDetails),
         );
     }
-    if let Some(quota) = model.ext.quota_tokens {
-        // Both adapters report token_count, not a quota ceiling. Keep the
-        // meter honest: a numeric label, with no invented percentage.
-        bar = bar.child(
-            ui::meter()
-                .key("quota")
-                .value(0.0)
-                .label(format!("{quota} tokens spent · limit not reported")),
-        );
+    // Both adapters report tokens spent, not a quota ceiling: a plain count, and only when the
+    // context meter (which already counts tokens) is absent.
+    if let Some(quota) = model.ext.quota_tokens
+        && model.content.usage.is_none()
+    {
+        bar = bar.child(ui::seg(format!("{quota} tokens spent")).key("quota"));
     }
     if let Some(usage) = &model.content.usage {
         bar = bar.child(
