@@ -242,10 +242,22 @@ impl Palette {
         }
         let filter = self.query.trim_start_matches('/').to_lowercase();
         if !filter.is_empty() {
-            rows.retain(|row| {
-                row.label.to_lowercase().contains(&filter)
-                    || row.detail.to_lowercase().contains(&filter)
-            });
+            // Name matches first (prefix, then substring), then description matches; stable
+            // within a rank so agent order is kept.
+            let rank = |row: &Row| {
+                let label = row.label.trim_start_matches('/').to_lowercase();
+                if label.starts_with(&filter) {
+                    Some(0)
+                } else if label.contains(&filter) {
+                    Some(1)
+                } else if row.detail.to_lowercase().contains(&filter) {
+                    Some(2)
+                } else {
+                    None
+                }
+            };
+            rows.retain(|row| rank(row).is_some());
+            rows.sort_by_key(|row| rank(row));
         }
         rows
     }

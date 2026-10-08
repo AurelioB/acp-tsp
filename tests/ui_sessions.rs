@@ -12,7 +12,8 @@ use acp_tsp::{
     },
 };
 use agent_client_protocol::schema::v1::{
-    AuthMethod, AuthMethodTerminal, SessionConfigOption, SessionConfigOptionCategory,
+    AuthMethod, AuthMethodTerminal, AvailableCommand, AvailableCommandsUpdate, SessionConfigOption,
+    SessionConfigOptionCategory, SessionUpdate,
 };
 use serde_json::{Value, json};
 use tern_sdk::{reconcile::Doc, term::Terminal, ui::View};
@@ -216,5 +217,24 @@ fn prefs_snapshot() {
     insta::assert_json_snapshot!(
         "ui_session_prefs",
         layer(View::new().layer(prefs::render(&model)))
+    );
+}
+
+#[test]
+fn palette_ranks_command_names_above_description_matches() {
+    // Agent commands are listed first, but a name-prefix match (`/new`) must outrank a
+    // name-substring (`renew-token`) or description match.
+    let (_, cmds) = drive(
+        b"/new\r\x1b[27u\x04",
+        Some(BridgeEvent::Update(Box::new(
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                AvailableCommand::new("renew-token", "Refresh credentials"),
+                AvailableCommand::new("review", "Review the new changes"),
+            ])),
+        ))),
+    );
+    assert!(
+        cmds.iter().any(|cmd| matches!(cmd, UiCmd::NewSession)),
+        "Enter must pick /new, got {cmds:?}"
     );
 }
