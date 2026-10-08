@@ -581,20 +581,16 @@ impl Model {
 
     /// The agent-local command with no model call; unknown agents have no usage command.
     pub fn usage_command(&self) -> Option<&'static str> {
-        let name = self
+        // Only a command the agent advertises is safe to send hidden: anything else would reach
+        // the model as an ordinary prompt. Codex reports limits in `/status`, others in `/usage`.
+        let advertised = |name: &str| self.sessions.commands.iter().any(|c| c.name == name);
+        let codex = self
             .agent
             .as_ref()
-            .map_or(self.launch_name.as_str(), |agent| agent.name.as_str());
-        if name.to_ascii_lowercase().contains("claude") {
-            Some("/usage")
-        } else if name.to_ascii_lowercase().contains("codex") {
+            .is_some_and(|agent| agent.name == crate::quirks::CODEX_ACP);
+        if codex && advertised("status") {
             Some("/status")
-        } else if self
-            .sessions
-            .commands
-            .iter()
-            .any(|command| command.name == "usage")
-        {
+        } else if advertised("usage") {
             Some("/usage")
         } else {
             None

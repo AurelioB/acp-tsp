@@ -289,8 +289,21 @@ fn session_picker_load_resume_delete_and_page_cursor() {
 fn hidden_usage_turn_captures_text_without_transcript_or_turn_totals() {
     use agent_client_protocol::schema::v1::{PromptResponse, StopReason};
     let mut model = Model::default();
-    model.launch_name = "Codex".into();
+    model.apply(BridgeEvent::Initialized(Box::new(
+        agent_client_protocol::schema::v1::InitializeResponse::new(
+            agent_client_protocol::schema::ProtocolVersion::V1,
+        )
+        .agent_info(agent_client_protocol::schema::v1::Implementation::new(
+            "@agentclientprotocol/codex-acp",
+            "2.1.1",
+        )),
+    )));
     start(&mut model);
+    model.apply(BridgeEvent::Update(Box::new(
+        SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+            AvailableCommand::new("status", "Show status"),
+        ])),
+    )));
     model.begin_usage();
     model.apply(BridgeEvent::Update(Box::new(
         SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
@@ -342,4 +355,41 @@ fn prompt_typed_during_a_usage_query_runs_as_its_own_turn() {
     assert_eq!(agent_text.len(), 1);
     assert!(agent_text[0].contains("answer"));
     assert_eq!(model.turn_summaries.len(), 1);
+}
+
+#[test]
+fn usage_query_only_uses_a_command_the_agent_advertises() {
+    use agent_client_protocol::schema::{
+        ProtocolVersion,
+        v1::{Implementation, InitializeResponse},
+    };
+    let model_for = |name: &str, commands: &[&str]| {
+        let mut model = Model::default();
+        model.apply(BridgeEvent::Initialized(Box::new(
+            InitializeResponse::new(ProtocolVersion::V1).agent_info(Implementation::new(name, "1")),
+        )));
+        model.apply(BridgeEvent::Update(Box::new(
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
+                commands
+                    .iter()
+                    .map(|command| AvailableCommand::new(*command, ""))
+                    .collect(),
+            )),
+        )));
+        model
+    };
+    // Unadvertised commands would reach the model as an ordinary prompt.
+    assert_eq!(
+        model_for("@agentclientprotocol/claude-agent-acp", &[]).usage_command(),
+        None
+    );
+    assert_eq!(
+        model_for("@agentclientprotocol/claude-agent-acp", &["usage"]).usage_command(),
+        Some("/usage")
+    );
+    assert_eq!(
+        model_for("@agentclientprotocol/codex-acp", &["status", "review"]).usage_command(),
+        Some("/status")
+    );
+    assert_eq!(model_for("other-agent", &["status"]).usage_command(), None);
 }

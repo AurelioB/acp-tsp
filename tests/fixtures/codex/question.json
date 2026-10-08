@@ -1,0 +1,58 @@
+{
+ "sessionId": "session-1",
+ "toolCallId": "call_e0d2b0b354664a528682f7a5790ddd8a",
+ "mode": "form",
+ "message": "Codex needs your input to continue.",
+ "requestedSchema": {
+  "type": "object",
+  "properties": {
+   "readme_spelling": {
+    "title": "Should the README use British or American spelling?",
+    "description": "Spelling",
+    "_meta": {
+     "codex": {
+      "isOther": true,
+      "isSecret": false
+     }
+    },
+    "type": "string",
+    "oneOf": [
+     {
+      "const": "American (Recommended)",
+      "title": "American (Recommended)",
+      "description": "Use American English spelling throughout the README."
+     },
+     {
+      "const": "British",
+      "title": "British",
+      "description": "Use British English spelling throughout the README."
+     },
+     {
+      "const": "None of the above",
+      "title": "None of the above",
+      "description": "Provide a different answer in the note field."
+     }
+    ]
+   },
+   "readme_spelling_note": {
+    "type": "string",
+    "title": "Additional answer or note",
+    "_meta": {
+     "codex": {
+      "questionId": "readme_spelling",
+      "role": "user_note",
+      "isSecret": false
+     }
+    }
+   }
+  },
+  "required": [
+   "readme_spelling"
+  ]
+ },
+ "_meta": {
+  "codex": {
+   "autoResolutionMs": null
+  }
+ }
+}

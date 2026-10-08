@@ -155,3 +155,43 @@ fn elicitation_permission_fifo_and_url_completion_resolve_by_id() {
     model.apply(BridgeEvent::Resolved(6));
     assert!(model.dialogs.is_empty());
 }
+
+#[test]
+fn codex_other_answer_sends_the_sentinel_choice_and_the_note() {
+    // A real Codex request_user_input form (codex-acp 2.1.1, Plan mode): the adapter maps
+    // "None of the above" + `<question>_note` back to a custom answer.
+    let request: CreateElicitationRequest =
+        serde_json::from_str(include_str!("fixtures/codex/question.json")).unwrap();
+    let agent_client_protocol::schema::v1::ElicitationMode::Form(form) = &request.mode else {
+        panic!("form")
+    };
+    let schema = &form.requested_schema;
+    let mut state = FormState::default();
+    state.init(4, &request);
+    assert!(state.choose(schema, "readme_spelling", "None of the above"));
+    let note: tern_sdk::wire::Edit = serde_json::from_value(serde_json::json!({
+        "ev": "edit", "sf": "s1",
+        "id": "layer.elicitation.form.readme_spelling_note.field.readme_spelling_note",
+        "from": 0, "to": 0, "text": "Canadian", "cursor": 8, "len": 0
+    }))
+    .unwrap();
+    assert!(state.edit(&note, schema));
+    let Some(acp_tsp::event::UiCmd::Elicitation { id, response }) = state.accept(4, &request)
+    else {
+        panic!("accepted")
+    };
+    assert_eq!(id, 4);
+    let agent_client_protocol::schema::v1::ElicitationAction::Accept(accepted) = response.action
+    else {
+        panic!("accept")
+    };
+    let content = accepted.content.unwrap();
+    assert_eq!(
+        content["readme_spelling"],
+        Value::String("None of the above".into())
+    );
+    assert_eq!(
+        content["readme_spelling_note"],
+        Value::String("Canadian".into())
+    );
+}

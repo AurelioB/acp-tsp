@@ -18,6 +18,8 @@ struct Pipes {
     output: Vec<u8>,
     sent: bool,
     quit: bool,
+    /// Input to deliver once the dialog is drawn; `None` fills in the default form.
+    script: Option<Vec<Vec<u8>>>,
 }
 struct Script(Rc<RefCell<Pipes>>);
 impl Terminal for Script {
@@ -31,6 +33,10 @@ impl Terminal for Script {
             pipes.input.push_back(b"\x1b[?62;52;c".to_vec());
         } else if bytes.windows(7).any(|w| w == b"tsp;f;{") && !pipes.sent {
             pipes.sent = true;
+            if let Some(script) = pipes.script.take() {
+                pipes.input.extend(script);
+                return Ok(());
+            }
             for (name, text) in [("name", "Ada"), ("count", "3")] {
                 let id = format!("layer.elicitation.form.{name}.field.{name}");
                 pipes.input.push_back(format!("\x1b_tsp;e;{}\x1b\\", serde_json::json!({
@@ -66,6 +72,72 @@ impl Terminal for Script {
     fn restore(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+fn run(script: Option<Vec<Vec<u8>>>) -> (Rc<RefCell<Pipes>>, Vec<UiCmd>) {
+    let schema = ElicitationSchema::new()
+        .property("name", StringPropertySchema::new(), true)
+        .property("count", IntegerPropertySchema::new().minimum(1), true);
+    let (wake, _reader) = wake_pair().unwrap();
+    let (tx, events) = event_channel(wake);
+    tx.send(BridgeEvent::Elicitation {
+        id: 9,
+        request: Box::new(CreateElicitationRequest::new(
+            ElicitationFormMode::new(ElicitationSessionScope::new("s"), schema),
+            "Details?",
+        )),
+    });
+    let pipes = Rc::new(RefCell::new(Pipes {
+        script,
+        ..Pipes::default()
+    }));
+    let (cmds, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    run_with_terminal(
+        Script(pipes.clone()),
+        UiOptions {
+            agent: "Fake".into(),
+            cwd: std::env::temp_dir(),
+            launch: AgentLaunch {
+                name: "Fake".into(),
+                command: "true".into(),
+                args: vec![],
+                env: Default::default(),
+            },
+        },
+        events,
+        cmds,
+        || {},
+    )
+    .unwrap();
+    let mut sent = Vec::new();
+    while let Ok(cmd) = receiver.try_recv() {
+        sent.push(cmd);
+    }
+    (pipes, sent)
+}
+
+fn action(response: &UiCmd) -> &ElicitationAction {
+    let UiCmd::Elicitation { id, response } = response else {
+        panic!("elicitation response, got {response:?}")
+    };
+    assert_eq!(*id, 9);
+    &response.action
+}
+
+#[test]
+fn escape_cancels_the_question() {
+    let (pipes, sent) = run(Some(vec![b"\x1b[27u".to_vec()]));
+    assert!(matches!(action(&sent[0]), ElicitationAction::Cancel));
+    assert!(pipes.borrow().quit, "the dialog must close");
+}
+
+#[test]
+fn decline_button_declines_the_question() {
+    let click = serde_json::json!({"ev": "action", "sf": "s1",
+        "id": "layer.elicitation.actions.decline", "act": "click", "mods": []});
+    let (pipes, sent) = run(Some(vec![format!("\x1b_tsp;e;{click}\x1b\\").into_bytes()]));
+    assert!(matches!(action(&sent[0]), ElicitationAction::Decline));
+    assert!(pipes.borrow().quit, "the dialog must close");
 }
 
 #[test]
