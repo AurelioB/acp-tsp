@@ -275,7 +275,14 @@ fn run_with_controller(
                                 form_request,
                             ) = &request.request.mode
                             {
-                                form.option_key(&form_request.requested_schema, &key)
+                                let schema = &form_request.requested_schema;
+                                let typing = form.focus.is_some();
+                                let changed =
+                                    form.text_key(schema, &key) || form.option_key(schema, &key);
+                                if typing && form.focus.is_none() {
+                                    session.focus(sf, None)?;
+                                }
+                                changed
                             } else {
                                 false
                             };
@@ -521,7 +528,7 @@ fn run_with_controller(
                 }
                 Msg::ElicitFocus(field) => {
                     if model.oldest_elicitation().is_some() {
-                        form.focus = Some(field.clone());
+                        form.focus_field(&field);
                         session.focus(
                             sf,
                             Some(&format!("layer.elicitation.form.{field}.field.{field}")),

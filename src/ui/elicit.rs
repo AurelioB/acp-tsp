@@ -17,17 +17,61 @@ pub fn first_field(request: &CreateElicitationRequest) -> Option<String> {
     let ElicitationMode::Form(form) = &request.mode else {
         return None;
     };
-    form.requested_schema
+    first_text_field(&form.requested_schema)
+        .map(|name| format!("layer.elicitation.form.{name}.field.{name}"))
+}
+
+/// The first field typed into rather than picked from; it holds the caret when the form opens.
+fn first_text_field(schema: &ElicitationSchema) -> Option<&String> {
+    schema
         .properties
         .iter()
-        .find_map(|(name, property)| {
-            match property {
-                Property::String(p) if p.enum_values.is_none() && p.one_of.is_none() => Some(name),
-                Property::Number(_) | Property::Integer(_) => Some(name),
-                _ => None,
+        .find_map(|(name, property)| is_text(property).then_some(name))
+}
+
+fn is_text(property: &Property) -> bool {
+    match property {
+        Property::String(p) => p.enum_values.is_none() && p.one_of.is_none(),
+        Property::Number(_) | Property::Integer(_) => true,
+        _ => false,
+    }
+}
+
+/// The option values of a choice field, in display order.
+fn choice_values(property: &Property) -> Option<Vec<&str>> {
+    match property {
+        Property::String(p) => p
+            .one_of
+            .as_ref()
+            .map(|choices| choices.iter().map(|item| item.value.as_str()).collect())
+            .or_else(|| {
+                p.enum_values
+                    .as_ref()
+                    .map(|choices| choices.iter().map(String::as_str).collect())
+            }),
+        Property::Array(p) => match &p.items {
+            MultiSelectItems::String(items) => {
+                Some(items.values.iter().map(String::as_str).collect())
             }
-            .map(|name| format!("layer.elicitation.form.{name}.field.{name}"))
-        })
+            MultiSelectItems::Titled(items) => Some(
+                items
+                    .options
+                    .iter()
+                    .map(|item| item.value.as_str())
+                    .collect(),
+            ),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The choice field the arrow keys drive (the first one) and its option values.
+fn cursor_field(schema: &ElicitationSchema) -> Option<(&String, Vec<&str>)> {
+    schema
+        .properties
+        .iter()
+        .find_map(|(name, property)| choice_values(property).map(|values| (name, values)))
 }
 
 #[derive(Default)]
@@ -63,7 +107,21 @@ impl FormState {
                     self.values.insert(name.clone(), value);
                 }
             }
+            if let Some(name) = first_text_field(&form.requested_schema) {
+                self.focus_field(name);
+            }
         }
+    }
+
+    /// Gives `name` the caret, at the end of its text.
+    pub fn focus_field(&mut self, name: &str) {
+        self.cursor = match self.values.get(name) {
+            Some(Value::String(s)) => s.encode_utf16().count(),
+            Some(Value::Number(n)) => n.to_string().len(),
+            Some(Value::Integer(n)) => n.to_string().len(),
+            _ => 0,
+        };
+        self.focus = Some(name.to_owned());
     }
 
     pub fn edit(&mut self, edit: &Edit, schema: &ElicitationSchema) -> bool {
@@ -205,77 +263,112 @@ impl FormState {
             }
             _ => return false,
         }
+        // Keep the highlighted row on the clicked option, so the row marker and the answer agree.
+        if let Some((field, values)) = cursor_field(schema)
+            && field == name
+            && let Some(index) = values.iter().position(|item| *item == value)
+        {
+            self.option_cursor = index;
+        }
         self.errors.remove(name);
         true
     }
 
-    /// Arrow keys move through a choice field; Space toggles a multi-choice row.
+    /// Arrow keys move through a choice field; Space toggles a multi-choice row once the
+    /// arrows have taken the keys from any text field.
     pub fn option_key(&mut self, schema: &ElicitationSchema, key: &tern_sdk::keys::Key) -> bool {
-        let Some((name, property)) = schema.properties.iter().find(|(_, property)| {
-            matches!(property, Property::String(p) if p.enum_values.is_some() || p.one_of.is_some())
-                || matches!(property, Property::Array(_))
-        }) else {
+        let Some((name, values)) = cursor_field(schema) else {
             return false;
         };
-        let values = match property {
-            Property::String(p) => p
-                .one_of
-                .as_ref()
-                .map(|choices| choices.len())
-                .or_else(|| p.enum_values.as_ref().map(Vec::len))
-                .unwrap_or(0),
-            Property::Array(p) => match &p.items {
-                MultiSelectItems::String(items) => items.values.len(),
-                MultiSelectItems::Titled(items) => items.options.len(),
-                _ => 0,
-            },
-            _ => 0,
-        };
-        if values == 0 {
+        if values.is_empty() {
             return false;
         }
         let moving = key.is("up") || key.is("down");
         if key.is("up") {
             self.option_cursor = self.option_cursor.saturating_sub(1);
         } else if key.is("down") {
-            self.option_cursor = (self.option_cursor + 1).min(values - 1);
+            self.option_cursor = (self.option_cursor + 1).min(values.len() - 1);
         } else if !key.is("space") && !key.is("enter") {
             return false;
         }
-        let value = match property {
-            Property::String(p) => p
-                .one_of
-                .as_ref()
-                .and_then(|items| {
-                    items
-                        .get(self.option_cursor)
-                        .map(|item| item.value.as_str())
-                })
-                .or_else(|| {
-                    p.enum_values
-                        .as_ref()
-                        .and_then(|items| items.get(self.option_cursor).map(String::as_str))
-                }),
-            Property::Array(p) => match &p.items {
-                MultiSelectItems::String(items) => {
-                    items.values.get(self.option_cursor).map(String::as_str)
-                }
-                MultiSelectItems::Titled(items) => items
-                    .options
-                    .get(self.option_cursor)
-                    .map(|item| item.value.as_str()),
-                _ => None,
-            },
-            _ => None,
+        let Some(value) = values.get(self.option_cursor).copied() else {
+            return false;
         };
-        let Some(value) = value else { return false };
-        if matches!(property, Property::Array(_)) && !key.is("space") {
-            return moving;
+        if matches!(schema.properties.get(name), Some(Property::Array(_))) {
+            if moving {
+                // Space has a job in a multi-choice list: moving through it takes the keys from
+                // a text field (a click or focus gives them back).
+                self.focus = None;
+            }
+            if !key.is("space") {
+                return moving;
+            }
         }
         if key.is("enter") && self.values.contains_key(name) {
             return false;
         }
         self.choose(schema, name, value)
+    }
+
+    /// Terminal keys typed while a text field holds the caret, the path the composer also
+    /// accepts besides surface edits: text, paste, Backspace, Delete and caret moves.
+    pub fn text_key(&mut self, schema: &ElicitationSchema, key: &tern_sdk::keys::Key) -> bool {
+        let Some(name) = self.focus.as_deref() else {
+            return false;
+        };
+        if !schema.properties.get(name).is_some_and(is_text) {
+            return false;
+        }
+        let mut chars: Vec<char> = match self.values.get(name) {
+            Some(Value::String(s)) => s.chars().collect(),
+            Some(Value::Number(n)) => n.to_string().chars().collect(),
+            Some(Value::Integer(n)) => n.to_string().chars().collect(),
+            _ => Vec::new(),
+        };
+        // `cursor` counts UTF-16 units; edit by chars.
+        let mut at = chars
+            .iter()
+            .scan(0, |offset, c| {
+                let start = *offset;
+                *offset += c.len_utf16();
+                Some(start)
+            })
+            .take_while(|start| *start < self.cursor)
+            .count();
+        let pasted = (key.name == "paste").then(|| key.text.as_deref().unwrap_or_default());
+        if let Some(text) = pasted.or_else(|| key.typed()) {
+            let text: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+            let typed = text.len();
+            chars.splice(at..at, text);
+            at += typed;
+        } else if key.is("backspace") {
+            if at == 0 {
+                return false;
+            }
+            at -= 1;
+            chars.remove(at);
+        } else if key.is("delete") {
+            if at == chars.len() {
+                return false;
+            }
+            chars.remove(at);
+        } else if key.is("left") {
+            at = at.saturating_sub(1);
+        } else if key.is("right") {
+            at = (at + 1).min(chars.len());
+        } else if key.is("home") {
+            at = 0;
+        } else if key.is("end") {
+            at = chars.len();
+        } else {
+            return false;
+        }
+        self.cursor = chars[..at].iter().map(|c| c.len_utf16()).sum();
+        let name = name.to_owned();
+        self.values
+            .insert(name.clone(), Value::String(chars.into_iter().collect()));
+        self.errors.remove(&name);
+        true
     }
 
     pub fn accept(&mut self, id: PendingId, request: &CreateElicitationRequest) -> Option<UiCmd> {
