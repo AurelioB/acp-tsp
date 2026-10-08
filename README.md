@@ -2,7 +2,11 @@
 
 `acp-tsp` is an ACP client that runs in a Tern agent block and renders the conversation natively with Tern Surface Protocol (TSP).
 
-Status: Stage 1 (basics) done: prompts, streamed answers/thoughts, tool calls with diffs, plans, permission dialogs, cancel, agent auth, confined `fs/*`, restart. Stages 2–3 are in progress; see [docs/PLAN.md](docs/PLAN.md).
+Status:
+
+- Stage 1 (basics) done: prompts, streamed answers/thoughts, tool calls with diffs, plans, permission dialogs, cancel, agent auth, confined `fs/*`, restart.
+- Stage 2 (rest of ACP v1 + unstable features) done: `terminal/*`, session list/load/resume/close/delete/fork, `additionalDirectories`, modes and config options, slash commands, file mentions with embedded context/images/audio, MCP servers, form/URL elicitation, terminal auth, logout, usage, `$/cancel_request`, providers, plan operations, notices, compaction, subagents, end-turn usage, MCP-over-ACP (`tern_open` tool). Not implemented: NES (`nes/*`, `document/*`) and draft protocol v2 — see [docs/PLAN.md](docs/PLAN.md) §10 D2.
+- Stage 3 (agent-specific extensions) in progress.
 
 ## Requirements and installation
 
@@ -55,6 +59,9 @@ url = "https://example.invalid/mcp"
 headers = { Authorization = "Bearer example" }
 ```
 
+When the agent advertises MCP-over-ACP (`mcpCapabilities.acp`), new sessions get an in-process
+`tern` MCP server whose `tern_open` tool opens a workspace file in Tern (`tern open`).
+
 Terminal commands requested by the agent inherit the user's privileges. Session roots constrain
 the *working directory* only: terminal commands are **not sandboxed** and can access files
 outside those roots.
@@ -88,7 +95,9 @@ The slash picker offers `/new`, `/sessions`, `/resume`, `/close`, `/delete`,
 `/mode`, `/config`, `/logout`, `/restart`, and `/quit` when supported by the
 agent; `/fork` and `/providers` appear when their unstable capabilities are
 available. Agent commands are inserted into the composer and sent as ordinary
-prompt text on Enter. Session settings use a native preferences sheet; the
+prompt text on Enter. A client command typed or pasted in full (`/sessions` + Enter) runs
+directly unless the agent has a command with the same name (Claude, for example, has its
+own `/config`), in which case the agent's command wins. Session settings use a native preferences sheet; the
 provider picker opens a provider's routing preferences, where saving replaces
 its entire headers map. Existing secret headers cannot be read back: enter the
 full replacement JSON map before saving. Terminal login methods temporarily
