@@ -195,6 +195,12 @@ fn install_agy(requested: Option<&str>) -> anyhow::Result<()> {
         bytes.len() / 1024 / 1024
     );
     verify_sha256(&bytes, dist.sha256.as_deref())?;
+    if dist.sha256.is_none() {
+        eprintln!(
+            "warning: the registry lists no sha256 for this archive; it was downloaded over HTTPS \
+             but is not checksum-verified."
+        );
+    }
     let staging = parent.join(format!(".{version}.tmp-{}", std::process::id()));
     std::fs::create_dir(&staging)?;
     let extraction = extract_archive(&bytes, &dist.archive, &dist.cmd, &staging);
