@@ -241,12 +241,50 @@ pub(super) async fn run(
                                         events.send(BridgeEvent::Error("Unsupported authentication method".into()));
                                         continue;
                                     }
-                                    match cx.send_request(AuthenticateRequest::new(id)).block_task().await {
+                                    let request = cx.send_request(AuthenticateRequest::new(id)).block_task();
+                                    tokio::pin!(request);
+                                    let result = loop {
+                                        tokio::select! {
+                                            result = &mut request => break result,
+                                            command = cmds.recv() => match command {
+                                                Some(UiCmd::Permission { id, outcome }) => {
+                                                    shared.pending.answer_permission(id, Ok(outcome));
+                                                }
+                                                Some(UiCmd::Elicitation { id, response }) => {
+                                                    shared.pending.answer_elicitation(id, Ok(response));
+                                                }
+                                                Some(UiCmd::Cancel) => {
+                                                    shared.pending.cancel_turn(&events);
+                                                    shared.pending.turn_ended();
+                                                }
+                                                Some(UiCmd::Restart) => return Ok(Some(true)),
+                                                Some(UiCmd::Shutdown) | None => return Ok(Some(false)),
+                                                Some(UiCmd::Prompt(_)) => {
+                                                    events.send(BridgeEvent::Error("Session is not ready".into()));
+                                                }
+                                                _ => {}
+                                            },
+                                            _ = cx.incoming_closed() => return Ok(None),
+                                        }
+                                    };
+                                    match result {
                                         Ok(_) => break,
-                                        Err(err) => { events.send(BridgeEvent::Error(err.to_string())); }
+                                        Err(err) => {
+                                            events.send(BridgeEvent::Error(err.to_string()));
+                                        }
                                     }
                                 }
                                 Some(UiCmd::RetrySession) => break,
+                                Some(UiCmd::Permission { id, outcome }) => {
+                                    shared.pending.answer_permission(id, Ok(outcome));
+                                }
+                                Some(UiCmd::Elicitation { id, response }) => {
+                                    shared.pending.answer_elicitation(id, Ok(response));
+                                }
+                                Some(UiCmd::Cancel) => {
+                                    shared.pending.cancel_turn(&events);
+                                    shared.pending.turn_ended();
+                                }
                                 Some(UiCmd::Restart) => return Ok(Some(true)),
                                 Some(UiCmd::Shutdown) | None => return Ok(Some(false)),
                                 Some(UiCmd::Prompt(_)) => { events.send(BridgeEvent::Error("Session is not ready".into())); }

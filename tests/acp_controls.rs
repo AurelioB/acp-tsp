@@ -11,7 +11,9 @@ use acp_tsp::{
 use agent_client_protocol::schema::{
     ProtocolVersion,
     v1::{
-        AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodTerminal,
+        AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodTerminal,
+        AuthenticateRequest, AuthenticateResponse, CreateElicitationRequest,
+        CreateElicitationResponse, ElicitationAction, ElicitationRequestScope, ElicitationUrlMode,
         InitializeRequest, InitializeResponse, LogoutCapabilities, LogoutRequest, LogoutResponse,
         NewSessionRequest, NewSessionResponse, SessionConfigOption, SessionConfigOptionValue,
         SessionMode, SessionModeState, SetSessionConfigOptionRequest,
@@ -215,6 +217,93 @@ async fn terminal_auth_retry_and_logout_require_new_auth() {
     cmd.send(UiCmd::RetrySession).unwrap();
     until(&rx, |e| matches!(e, BridgeEvent::SessionStarted { .. })).await;
     assert_eq!(calls.load(Ordering::SeqCst), 4);
+    cmd.send(UiCmd::Shutdown).unwrap();
+    bridge.await.unwrap().unwrap();
+    agent.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn authentication_can_wait_for_request_scoped_url_elicitation() {
+    use agent_client_protocol::{Client, ConnectionTo};
+    let root = tempfile::tempdir().unwrap();
+    let (client, server) = Channel::duplex();
+    let ready = Arc::new(AtomicBool::new(false));
+    let fake =
+        Agent
+            .builder()
+            .on_receive_request(
+                async |_: InitializeRequest, responder, _cx| {
+                    responder.respond(InitializeResponse::new(ProtocolVersion::V1).auth_methods(
+                        vec![AuthMethod::Agent(AuthMethodAgent::new("login", "Login"))],
+                    ))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let ready = ready.clone();
+                    async move |_: NewSessionRequest, responder, _cx| {
+                        if ready.load(Ordering::SeqCst) {
+                            responder.respond(NewSessionResponse::new("ready"))
+                        } else {
+                            responder.respond_with_error(Error::auth_required())
+                        }
+                    }
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let ready = ready.clone();
+                    async move |_: AuthenticateRequest, responder, cx: ConnectionTo<Client>| {
+                        let worker = cx.clone();
+                        let ready = ready.clone();
+                        cx.spawn(async move {
+                            let answer = worker
+                                .send_request(CreateElicitationRequest::new(
+                                    ElicitationUrlMode::new(
+                                        ElicitationRequestScope::new(1),
+                                        "device-code",
+                                        "https://example.invalid/login",
+                                    ),
+                                    "Log in",
+                                ))
+                                .block_task()
+                                .await?;
+                            assert_eq!(answer.action, ElicitationAction::Decline);
+                            ready.store(true, Ordering::SeqCst);
+                            responder.respond(AuthenticateResponse::new())
+                        })?;
+                        Ok(())
+                    }
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_to(server);
+    let (wake, _) = wake_pair().unwrap();
+    let (events, rx) = event_channel(wake);
+    let (cmd, commands) = mpsc::unbounded_channel();
+    let bridge = tokio::spawn(acp::run_with(
+        client,
+        SessionOptions::new(root.path().into()),
+        events,
+        commands,
+    ));
+    let agent = tokio::spawn(fake);
+    until(&rx, |e| matches!(e, BridgeEvent::AuthRequired { .. })).await;
+    cmd.send(UiCmd::Authenticate("login".into())).unwrap();
+    let dialog = until(&rx, |e| matches!(e, BridgeEvent::Elicitation { .. })).await;
+    let id = match dialog.last().unwrap() {
+        BridgeEvent::Elicitation { id, .. } => *id,
+        _ => unreachable!(),
+    };
+    cmd.send(UiCmd::Elicitation {
+        id,
+        response: CreateElicitationResponse::new(ElicitationAction::Decline),
+    })
+    .unwrap();
+    until(&rx, |e| matches!(e, BridgeEvent::SessionStarted { .. })).await;
+    assert!(ready.load(Ordering::SeqCst));
     cmd.send(UiCmd::Shutdown).unwrap();
     bridge.await.unwrap().unwrap();
     agent.await.unwrap().unwrap();
