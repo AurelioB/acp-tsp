@@ -752,27 +752,19 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
                 .on_click(Msg::ConfigChip(id)),
         );
     }
-    if let Some(session) = &model.session {
-        let folder = session.cwd.file_name().map_or_else(
-            || session.cwd.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        );
+    // No directory chip: Tern adds the pane's place as a crumb in omp's composer bar, as for
+    // omp; a chip of our own showed the folder twice.
+    if let Some(name) = model
+        .session
+        .as_ref()
+        .and_then(|session| session.title.as_ref())
+    {
         extras = extras.child(
-            ui::seg(ui::span(folder).style("statusLinePath"))
-                .key("cwd")
+            ui::seg(name.clone())
+                .key("session")
                 .role("omp.composer.fact")
-                .priority(7.0)
-                .icon("folder")
-                .title(session.cwd.display().to_string()),
+                .priority(2.0),
         );
-        if let Some(name) = &session.title {
-            extras = extras.child(
-                ui::seg(name.clone())
-                    .key("session")
-                    .role("omp.composer.fact")
-                    .priority(2.0),
-            );
-        }
     }
     if let Some(auth) = &model.ext.auth
         && let Some(label) = &auth.label
