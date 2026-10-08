@@ -170,7 +170,11 @@ The dashboard also totals this session's reported tokens, cost, context and turn
 durations; no cross-session activity is inferred. The composer usage text and
 context meter open it. Codex's `collaboration_mode` Plan setting appears as a
 chip while active; click to return to default, use `/plan` or `/config` to enable
-it again. Plan mode enables Codex question prompts (`request_user_input`).
+it again. Codex asks structured questions (`request_user_input`) in Plan mode; in
+Default mode only when its under-development `default_mode_request_user_input`
+feature is enabled in Codex's own config (`[features]` in `~/.codex/config.toml`).
+Checked with codex 0.159.3 (bundled with codex-acp 2.1.1) and 0.160.0, where it is off
+by default.
 `/goal` opens a goal-control form only when the agent advertises `_session/goal`
 (some adapters expose it only to AIR clients).
 The dock account chip opens account details on click; the account e-mail is hidden

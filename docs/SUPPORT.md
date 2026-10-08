@@ -32,7 +32,7 @@ Status meanings:
 | modes / config options / model picker | yes | live (chips, sheet) | live (Shift+Tab mode, picker) | unknown |
 | slash commands, `@` mentions | yes | live | live (`/`) | unknown |
 | usage dashboard (hidden local command, limits, session totals) | yes | live (`/usage`) | live (`/status`) | unknown |
-| elicitation: form | yes | live (AskUserQuestion) | live in Plan mode (`request_user_input`) | unknown |
+| elicitation: form | yes | live (AskUserQuestion) | live (`request_user_input`: Plan mode; Default mode with Codex's `default_mode_request_user_input` feature; choice, "None of the above" + note) | unknown |
 | elicitation: URL | yes | fake | fake (device-code login uses it) | unknown |
 | usage_update (context, cost) | yes | live | live (context only; ChatGPT plans report no cost) | unknown |
 | end-turn token usage (single model request per turn) | yes | live, fixture | live, fixture | unknown |
