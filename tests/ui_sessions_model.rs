@@ -57,6 +57,11 @@ fn switch_resets_old_turn_transcript_and_dialogs_but_load_replays_history() {
             "replayed",
         )))),
     )));
+    let title: SessionInfoUpdate =
+        serde_json::from_value(json!({"title": "Replayed title"})).unwrap();
+    model.apply(BridgeEvent::Update(Box::new(
+        SessionUpdate::SessionInfoUpdate(title),
+    )));
     model.apply(BridgeEvent::SessionStarted {
         session_id: "s2".into(),
         kind: SessionStartKind::Load,
@@ -67,6 +72,10 @@ fn switch_resets_old_turn_transcript_and_dialogs_but_load_replays_history() {
     });
     assert_eq!(model.session.as_ref().unwrap().id.0.as_ref(), "s2");
     assert_eq!(model.session.as_ref().unwrap().kind, SessionStartKind::Load);
+    assert_eq!(
+        model.session.as_ref().unwrap().title.as_deref(),
+        Some("Replayed title")
+    );
     assert!(
         matches!(&model.transcript[0].kind, EntryKind::Agent { text, .. } if text == "replayed")
     );

@@ -18,6 +18,13 @@ pub struct SessionCatalog {
     pub providers: Option<agent_client_protocol::schema::v1::ListProvidersResponse>,
 }
 
+/// Metadata replayed before `SessionStarted` on a loaded session.
+#[derive(Debug, Default)]
+pub(super) struct SessionMetadata {
+    pub title: Option<String>,
+    pub updated_at: Option<String>,
+}
+
 impl Model {
     pub(super) fn apply_session_update(&mut self, update: SessionUpdate) -> Option<SessionUpdate> {
         match update {
@@ -39,12 +46,19 @@ impl Model {
                 }
             }
             SessionUpdate::SessionInfoUpdate(update) => {
-                if let Some(session) = &mut self.session {
+                let values = if let Some(session) = &mut self.session {
+                    Some((&mut session.title, &mut session.updated_at))
+                } else {
+                    self.loading_info
+                        .as_mut()
+                        .map(|info| (&mut info.title, &mut info.updated_at))
+                };
+                if let Some((title, updated_at)) = values {
                     if !update.title.is_undefined() {
-                        session.title = update.title.take();
+                        *title = update.title.take();
                     }
                     if !update.updated_at.is_undefined() {
-                        session.updated_at = update.updated_at.take();
+                        *updated_at = update.updated_at.take();
                     }
                 }
             }

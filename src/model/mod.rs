@@ -11,7 +11,7 @@ use agent_client_protocol::schema::v1::{
 };
 
 use crate::event::{BridgeEvent, PendingId, SessionStartKind};
-use session::SessionCatalog;
+use session::{SessionCatalog, SessionMetadata};
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -83,6 +83,7 @@ pub struct Model {
     pub capabilities: AgentCapabilities,
     pub sessions: SessionCatalog,
     pub session: Option<ActiveSession>,
+    loading_info: Option<SessionMetadata>,
     pub turn: Turn,
     pub queued: usize,
     pub transcript: Vec<Entry>,
@@ -110,6 +111,7 @@ impl Default for Model {
             auth: None,
             auth_selected: 0,
             session: None,
+            loading_info: None,
             turn: Turn::Idle,
             queued: 0,
             transcript: Vec::new(),
@@ -181,6 +183,7 @@ impl Model {
             }
             BridgeEvent::SessionStarting(_) => {
                 self.session = None;
+                self.loading_info = Some(SessionMetadata::default());
                 self.auth = None;
                 self.turn = Turn::Idle;
                 self.queued = 0;
@@ -202,6 +205,7 @@ impl Model {
                 modes,
                 config_options,
             } => {
+                let metadata = self.loading_info.take().unwrap_or_default();
                 self.session = Some(ActiveSession {
                     id: session_id,
                     kind,
@@ -209,8 +213,8 @@ impl Model {
                     additional_dirs,
                     modes,
                     config_options,
-                    title: None,
-                    updated_at: None,
+                    title: metadata.title,
+                    updated_at: metadata.updated_at,
                 });
                 self.auth = None;
                 self.exited = None;
@@ -218,6 +222,7 @@ impl Model {
             }
             BridgeEvent::SessionClosed => {
                 self.session = None;
+                self.loading_info = None;
                 self.status = "Session closed".into();
             }
             BridgeEvent::SessionList {
@@ -256,6 +261,7 @@ impl Model {
             BridgeEvent::LoggedOut => {
                 self.auth = None;
                 self.session = None;
+                self.loading_info = None;
                 self.status = "Logged out".into();
             }
             BridgeEvent::Update(update) => self.update(*update),
@@ -305,6 +311,7 @@ impl Model {
                 self.queued_echoes.clear();
                 self.permissions.clear();
                 self.auth = None;
+                self.loading_info = None;
                 self.queued = 0;
             }
             _ => {}
