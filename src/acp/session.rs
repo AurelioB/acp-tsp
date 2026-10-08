@@ -13,7 +13,7 @@ use agent_client_protocol::schema::v1::{
     SessionConfigOption, SessionConfigOptionValue, SessionId, SessionModeState,
     SetSessionConfigOptionRequest, SetSessionModeRequest,
 };
-use agent_client_protocol::{Agent, ConnectionTo, Error};
+use agent_client_protocol::{Agent, ConnectionTo, Error, UntypedMessage};
 #[cfg(feature = "unstable_mcp_over_acp")]
 use agent_client_protocol::{NullRun, mcp_server::McpServer as InProcessMcpServer};
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -35,13 +35,13 @@ impl Drop for ScopedMcp {
 pub(super) async fn run(
     cx: ConnectionTo<Agent>,
     options: SessionOptions,
-    agent: (AgentCapabilities, Vec<AuthMethod>),
+    agent: (AgentCapabilities, Vec<AuthMethod>, bool),
     shared: Arc<Shared>,
     terminals: Terminals,
     events: EventTx,
     cmds: &mut UnboundedReceiver<UiCmd>,
 ) -> Result<Option<bool>, Error> {
-    let (caps, methods) = agent;
+    let (caps, methods, steering_supported) = agent;
     let dirs = if caps.session_capabilities.additional_directories.is_some() {
         options.additional_dirs.clone()
     } else {
@@ -118,6 +118,11 @@ pub(super) async fn run(
             selected = StartSession::New;
         }
     }
+    let (steer_tx, mut steer_rx) = mpsc::unbounded_channel::<(
+        SessionId,
+        Vec<ContentBlock>,
+        Result<serde_json::Value, Error>,
+    )>();
     let (turn_tx, mut turn_rx) = mpsc::unbounded_channel::<TurnResult>();
     let mut turn_token = 0_u64;
     let mut current_turn_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
@@ -156,7 +161,8 @@ pub(super) async fn run(
                 StartSession::New => {
                     let request = NewSessionRequest::new(&options.cwd)
                         .additional_directories(dirs.clone())
-                        .mcp_servers(servers.clone());
+                        .mcp_servers(servers.clone())
+                        .meta(options.session_meta.clone());
                     #[cfg(feature = "unstable_mcp_over_acp")]
                     let response = if caps.mcp_capabilities.acp {
                         let roots = std::iter::once(options.cwd.clone())
@@ -205,7 +211,8 @@ pub(super) async fn run(
                     cx.send_request(
                         LoadSessionRequest::new(id.clone(), &options.cwd)
                             .additional_directories(dirs.clone())
-                            .mcp_servers(servers.clone()),
+                            .mcp_servers(servers.clone())
+                            .meta(options.session_meta.clone()),
                     )
                     .block_task()
                 )
@@ -214,7 +221,8 @@ pub(super) async fn run(
                     cx.send_request(
                         ResumeSessionRequest::new(id.clone(), &options.cwd)
                             .additional_directories(dirs.clone())
-                            .mcp_servers(servers.clone()),
+                            .mcp_servers(servers.clone())
+                            .meta(options.session_meta.clone()),
                     )
                     .block_task()
                 )
@@ -365,10 +373,33 @@ pub(super) async fn run(
                     running = false;
                 }
                 match cmd {
-                Some(UiCmd::Extension { method, .. }) => {
-                    events.send(BridgeEvent::ExtensionResult { method, result: Err("extension requests are not supported yet".into()) });
+                Some(UiCmd::Extension { method, params }) => {
+                    if !method.starts_with('_') {
+                        events.send(BridgeEvent::ExtensionResult { method, result: Err("Extension methods must begin with _".into()) });
+                    } else {
+                        let cx = cx.clone();
+                        let events = events.clone();
+                        tokio::spawn(async move {
+                            let result = cx.send_request(UntypedMessage { method: method.clone(), params })
+                                .block_task().await.map_err(|err| err.to_string());
+                            events.send(BridgeEvent::ExtensionResult { method, result });
+                        });
+                    }
                 }
-                // Steering falls back to a queued prompt until `_session/steering` is wired.
+                Some(UiCmd::Steer(prompt)) if running && steering_supported && !prompt.is_empty() => {
+                    if let Some(id) = active.clone() {
+                        let cx = cx.clone();
+                        let tx = steer_tx.clone();
+                        tokio::spawn(async move {
+                            let params = serde_json::json!({"sessionId": id, "prompt": &prompt,
+                                "_meta": {"steering": {"idleBehavior": "promptRequired"}}});
+                            let result = cx.send_request(UntypedMessage {
+                                method: "_session/steering".into(), params,
+                            }).block_task().await;
+                            let _ = tx.send((id, prompt, result));
+                        });
+                    }
+                }
                 Some(UiCmd::Prompt(prompt) | UiCmd::Steer(prompt)) => {
                     if let Some(id) = &active {
                         queued.push_back(prompt);
@@ -462,7 +493,8 @@ pub(super) async fn run(
                         if caps.session_capabilities.fork.is_some() {
                             events.send(BridgeEvent::SessionStarting(SessionStartKind::Fork));
                             match cx.send_request(ForkSessionRequest::new(id.clone(), &options.cwd)
-                                .additional_directories(dirs.clone()).mcp_servers(servers.clone())).block_task().await {
+                                .additional_directories(dirs.clone()).mcp_servers(servers.clone())
+                                .meta(options.session_meta.clone())).block_task().await {
                                 Ok(s) => {
                                     switch(&shared, &terminals, &events, &mut mcp_task);
                                     *shared.session.lock() = Some(s.session_id.clone());
@@ -533,6 +565,25 @@ pub(super) async fn run(
                 Some(UiCmd::RetrySession) => { events.send(BridgeEvent::Error("Authentication is not requested".into())); }
                 Some(UiCmd::Restart) => return Ok(Some(true)),
                 Some(UiCmd::Shutdown) | None => return Ok(Some(false)),
+                }
+            }
+            steered = steer_rx.recv() => {
+                if let Some((id, prompt, result)) = steered {
+                    if active.as_ref() != Some(&id) { continue; }
+                    // The opt-in idle behavior asks Claude to leave the prompt untouched
+                    // when the turn ended before injection. Codex 2.1.1 ignores that hint
+                    // and may report startedNewTurn: do not send it twice.
+                    let accepted = matches!(&result, Ok(value) if
+                        matches!(value.get("outcome").and_then(serde_json::Value::as_str),
+                            Some("injected" | "startedNewTurn")));
+                    if !accepted {
+                        queued.push_back(prompt);
+                        if !running {
+                            current_turn_cancel = Some(start_prompt(&cx, &id,
+                                queued.pop_front().expect("queued steer"), &mut turn_token, &turn_tx)?);
+                            running = true;
+                        }
+                    }
                 }
             }
             result = turn_rx.recv(), if running => {

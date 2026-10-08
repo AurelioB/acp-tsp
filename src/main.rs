@@ -44,6 +44,9 @@ struct Cli {
     /// Additional workspace root (repeatable, must be an existing directory).
     #[arg(long = "add-dir", global = true)]
     add_dirs: Vec<PathBuf>,
+    /// Append redacted ACP JSONL lines to this file (also ACP_TSP_RECORD).
+    #[arg(long, global = true)]
+    record_acp: Option<PathBuf>,
     /// Agent command and arguments (takes precedence over --agent).
     #[arg(last = true)]
     command: Vec<String>,
@@ -161,6 +164,7 @@ fn run_session(cli: Cli) -> anyhow::Result<()> {
         .map(|dir| canonical_cwd(Some(dir)))
         .collect::<anyhow::Result<_>>()?;
     options.mcp_servers = config.mcp_servers(&launch.name)?;
+    options.session_meta = config.session_meta(&launch.name);
     let (waker, wake_fd) = bus::wake_pair()?;
     let (events_tx, events_rx) = bus::event_channel(waker);
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -179,7 +183,13 @@ fn run_session(cli: Cli) -> anyhow::Result<()> {
         wake_fd,
         cmd_tx.clone(),
         || {
-            acp_task = Some(runtime.spawn(acp::run(agent_launch, options, events_tx, cmd_rx)));
+            acp_task = Some(runtime.spawn(acp::run_recorded(
+                agent_launch,
+                options,
+                events_tx,
+                cmd_rx,
+                cli.record_acp,
+            )));
         },
     );
     let _ = cmd_tx.send(UiCmd::Shutdown);

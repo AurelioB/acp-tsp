@@ -6,7 +6,10 @@ mod pending;
 mod session;
 
 use parking_lot::Mutex;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use agent_client_protocol::schema::ProtocolVersion;
 #[cfg(feature = "unstable_session_compaction")]
@@ -18,7 +21,7 @@ use agent_client_protocol::schema::v1::PlanCapabilities;
 #[cfg(feature = "unstable_subagents")]
 use agent_client_protocol::schema::v1::SubagentCapabilities;
 use agent_client_protocol::schema::v1::{
-    AuthCapabilities, BooleanConfigOptionCapabilities, ClientCapabilities, ClientNotification,
+    AgentNotification, AuthCapabilities, BooleanConfigOptionCapabilities, ClientCapabilities,
     ClientSessionCapabilities, CompleteElicitationNotification, CreateElicitationRequest,
     CreateTerminalRequest, ElicitationCapabilities, ElicitationFormCapabilities,
     ElicitationUrlCapabilities, FileSystemCapabilities, Implementation, InitializeRequest,
@@ -27,7 +30,7 @@ use agent_client_protocol::schema::v1::{
     WaitForTerminalExitRequest, WriteTextFileRequest,
 };
 use agent_client_protocol::{
-    AcpAgent, AcpAgentConfig, Agent, Client, ConnectTo, ConnectionTo, Error,
+    AcpAgent, AcpAgentConfig, Agent, Client, ConnectTo, ConnectionTo, Error, LineDirection,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -55,22 +58,108 @@ pub async fn run(
     launch: AgentLaunch,
     options: SessionOptions,
     events: EventTx,
-    mut cmds: UnboundedReceiver<UiCmd>,
+    cmds: UnboundedReceiver<UiCmd>,
 ) -> anyhow::Result<()> {
+    run_recorded(launch, options, events, cmds, None).await
+}
+
+/// Like [`run`], optionally appending a redacted wire transcript for fixture capture.
+pub async fn run_recorded(
+    launch: AgentLaunch,
+    options: SessionOptions,
+    events: EventTx,
+    mut cmds: UnboundedReceiver<UiCmd>,
+    record: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let record = record.or_else(|| std::env::var_os("ACP_TSP_RECORD").map(PathBuf::from));
+    let recorder = record.map(Recorder::open).transpose()?;
     loop {
         let config = AcpAgentConfig::new(&launch.command)
             .args(launch.args.clone())
             .envs(launch.env.clone());
-        let restart = drive(
-            AcpAgent::new(config),
-            options.clone(),
-            events.clone(),
-            &mut cmds,
-        )
-        .await?;
+        let mut agent = AcpAgent::new(config);
+        if let Some(recorder) = &recorder {
+            let recorder = recorder.clone();
+            agent = agent.with_debug(move |line, direction| recorder.record(line, direction));
+        }
+        let restart = drive(agent, options.clone(), events.clone(), &mut cmds).await?;
         if !restart {
             return Ok(());
         }
+    }
+}
+
+#[derive(Clone)]
+struct Recorder {
+    writer: Arc<Mutex<std::fs::File>>,
+    started: Instant,
+}
+
+impl Recorder {
+    fn open(path: PathBuf) -> std::io::Result<Self> {
+        use std::fs::OpenOptions;
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let writer = options.open(path)?;
+        Ok(Self {
+            writer: Arc::new(Mutex::new(writer)),
+            started: Instant::now(),
+        })
+    }
+
+    fn record(&self, line: &str, direction: LineDirection) {
+        let dir = match direction {
+            LineDirection::Stdin => "out",
+            LineDirection::Stdout => "in",
+            LineDirection::Stderr => "stderr",
+        };
+        // Stderr is not protocol JSON: it can carry arbitrary credentials.
+        let sanitized = if dir == "stderr" {
+            "[redacted]".to_owned()
+        } else {
+            let Ok(mut json) = serde_json::from_str::<serde_json::Value>(line) else {
+                self.write_line(dir, "[redacted]");
+                return;
+            };
+            redact(&mut json);
+            json.to_string()
+        };
+        self.write_line(dir, &sanitized);
+    }
+
+    fn write_line(&self, dir: &str, sanitized: &str) {
+        let entry = serde_json::json!({
+            "t": self.started.elapsed().as_millis(),
+            "dir": dir,
+            "line": sanitized,
+        });
+        let _ = writeln!(self.writer.lock(), "{entry}");
+    }
+}
+
+fn redact(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            if fields.get("method").and_then(serde_json::Value::as_str)
+                == Some("_auth/status_update")
+            {
+                fields.insert("params".into(), serde_json::json!({"redacted": true}));
+            }
+            for (key, child) in fields {
+                if key.eq_ignore_ascii_case("email") {
+                    *child = serde_json::Value::String("[redacted]".into());
+                } else {
+                    redact(child);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => values.iter_mut().for_each(redact),
+        _ => {}
     }
 }
 
@@ -94,6 +183,11 @@ pub fn capabilities() -> ClientCapabilities {
     #[cfg(feature = "unstable_session_compaction")]
     let session = session.compaction(CompactionCapabilities::new());
     let client = ClientCapabilities::new()
+        .meta(
+            serde_json::json!({"terminal_output": true, "terminal-auth": true})
+                .as_object()
+                .cloned(),
+        )
         .fs(FileSystemCapabilities::new()
             .read_text_file(true)
             .write_text_file(true))
@@ -157,11 +251,21 @@ async fn drive(
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_notification(
-            async |notification: ClientNotification, _cx| {
-                if let ClientNotification::ExtNotification(extension) = notification {
-                    tracing::debug!(method = %extension.method, "ignoring extension notification");
+            {
+                let events = events.clone();
+                async move |notification: AgentNotification, _cx| {
+                    if let AgentNotification::ExtNotification(extension) = notification
+                        && let Ok(params) = serde_json::from_str(extension.params.get())
+                    {
+                        // SDK 3.1 strips the initial `_` while parsing extension
+                        // notification methods; restore the wire method for the UI.
+                        events.send(BridgeEvent::Extension {
+                            method: format!("_{}", extension.method),
+                            params,
+                        });
+                    }
+                    Ok(())
                 }
-                Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
         )
@@ -311,6 +415,13 @@ async fn drive(
             }
             let methods = init.auth_methods.clone();
             let caps = init.agent_capabilities.clone();
+            let steering = init
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("steering"))
+                .and_then(|steering| steering.get("supported"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
             if caps.session_capabilities.additional_directories.is_some() {
                 let mut roots = vec![options.cwd.clone()];
                 roots.extend(options.additional_dirs.clone());
@@ -321,7 +432,7 @@ async fn drive(
             session::run(
                 cx,
                 options,
-                (caps, methods),
+                (caps, methods, steering),
                 shared.clone(),
                 terminals.clone(),
                 events.clone(),
@@ -388,5 +499,25 @@ async fn await_startup<T>(
                 _ => {},
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod recorder_tests {
+    use super::*;
+
+    #[test]
+    fn status_params_and_nested_emails_never_reach_recordings() {
+        let mut update = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "_auth/status_update",
+            "params": {"email":"private@example.invalid", "nested":{"email":"private@example.invalid"}}
+        });
+        redact(&mut update);
+        assert_eq!(update["params"], serde_json::json!({"redacted": true}));
+        let mut other =
+            serde_json::json!({"result": {"account": {"email": "private@example.invalid"}}});
+        redact(&mut other);
+        assert_eq!(other["result"]["account"]["email"], "[redacted]");
     }
 }

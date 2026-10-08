@@ -41,6 +41,31 @@ args = ["-y", "@agentclientprotocol/claude-agent-acp@0.87.0"]
 env = { EXAMPLE_SETTING = "value" }
 ```
 
+Adapter-specific session metadata goes under `[agents.NAME.session_meta]` and is sent
+as `_meta` on session/new/load/resume/fork. For example, disable Claude's bypass mode:
+
+```toml
+[agents.claude.session_meta.claudeCode.options]
+allowDangerouslySkipPermissions = false
+```
+
+Codex `api-key` authentication reads `CODEX_API_KEY` first, then `OPENAI_API_KEY`
+from its process environment; set either in `[agents.codex.env]` or the
+environment that launches acp-tsp. The adapter also accepts
+`authenticate._meta[\"api-key\"].apiKey`, but this client does not prompt for or
+record secrets. `chat-gpt-device-code` uses the URL elicitation dialog.
+
+Both adapters recognize `clientCapabilities._meta.terminal_output = true` and
+stream command output in tool-call `_meta.terminal_output` updates (with
+`terminal_info` and `terminal_exit`); Claude also recognizes
+`clientCapabilities._meta["terminal-auth"] = true`. Steering is opt-in via
+`InitializeResponse._meta.steering.supported`: while a turn runs the client
+sends `_session/steering` with `{sessionId, prompt, _meta:
+{steering: {idleBehavior: "promptRequired"}}}`. Claude returns
+`promptRequired` when the turn just ended; Codex 2.1.1 accepts the params but
+does not yet honor `idleBehavior`. Without a running turn the client uses
+ordinary queued `session/prompt`.
+
 MCP servers may be configured globally or per agent; per-agent entries are appended to the
 global list. HTTP and SSE transports require matching agent capabilities; unsupported servers
 are skipped with an error shown in the UI.
@@ -145,13 +170,25 @@ hand the pane back to the terminal, then reconnect.
 
 Runtime logs go to `$XDG_STATE_HOME/acp-tsp/acp-tsp.log`, falling back to `~/.local/state/acp-tsp/acp-tsp.log`. `ACP_TSP_LOG` sets the level for acp-tsp (`debug`; default `info`); full directives such as `agent_client_protocol=debug` are taken as written, but dependency debug logs contain raw ACP payloads, including account e-mails.
 
+`ACP_TSP_RECORD=/path/to/file.jsonl` (or `--record-acp FILE`) appends a
+timestamped ACP wire transcript, including stderr, for explicit debugging.
+`_auth/status_update` params and `email` fields are redacted; stderr is
+redacted entirely. **Other ACP payloads include prompts, file contents, and
+potentially secrets**: protect the file and review/sanitize before sharing.
+
 - `ACP_TSP_CONFIG`: configuration file path.
 - `ACP_TSP_TRACE_WIRE=1`: log every ACP line at `trace` (needs `ACP_TSP_LOG=trace`); payloads may contain account information.
 - `TERN_TSP=0`: disables TSP detection/rendering.
 - `TERN_TSP_RECORD`: records TSP traffic through `tern-sdk`.
+- `ACP_TSP_RECORD`: append redacted ACP JSONL (`t`, `dir`, `line`).
 
 ## Development
 
 `cargo test` runs unit and in-process fake-agent tests. `scripts/tern-e2e.sh` drives the release binary inside a headless `tern serve` for manual end-to-end checks against real agents.
+
+Sanitized adapter transcripts under `tests/fixtures/{claude,codex}/` come from
+Claude 0.87.0 (Read tool plus session/list) and Codex 2.1.1 (terminal-output
+command and read-only plan review); `tests/replay_agents.rs` replays them
+through the ACP bridge, model, and view.
 
 See [docs/PLAN.md](docs/PLAN.md) for protocol research, scope and planned stages.

@@ -26,6 +26,8 @@ pub struct AgentOverride {
     pub args: Option<Vec<String>>,
     pub env: BTreeMap<String, String>,
     pub mcp_servers: Vec<McpServerConfig>,
+    /// Adapter-specific `_meta` sent on session setup (never logged).
+    pub session_meta: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// TOML transport entry. Stdio is the default when `type` is absent.
@@ -166,6 +168,13 @@ impl Config {
             .map(McpServerConfig::resolve)
             .collect()
     }
+
+    /// Metadata for session/new, load, resume, and fork for this agent only.
+    pub fn session_meta(&self, agent: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+        self.agents
+            .get(agent)
+            .and_then(|config| config.session_meta.clone())
+    }
 }
 
 fn preset(name: &str) -> anyhow::Result<AgentLaunch> {
@@ -300,5 +309,26 @@ mod tests {
                 .to_string()
                 .contains("command")
         );
+    }
+    #[test]
+    fn session_meta_maps_nested_toml_tables_to_json() {
+        let config: Config = toml::from_str(
+            r#"
+            [agents.claude.session_meta.claudeCode.options]
+            allowDangerouslySkipPermissions = false
+            threshold = 2
+            modes = ["plan", "default"]
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::Value::Object(config.session_meta("claude").unwrap()),
+            serde_json::json!({"claudeCode": {"options": {
+                "allowDangerouslySkipPermissions": false,
+                "threshold": 2,
+                "modes": ["plan", "default"]
+            }}})
+        );
+        assert!(config.session_meta("codex").is_none());
     }
 }
