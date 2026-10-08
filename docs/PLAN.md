@@ -185,6 +185,16 @@ JetBrains AIR `_meta.jetbrains.air.*`: not advertised (AIR-client-only; adapters
 
 Acceptance: recorded ACP transcripts (JSONL via `AcpAgent::with_debug`) per agent committed as fixtures under `tests/fixtures/<agent>/`; replay tests feed them through the model + view; manual smoke of each listed feature per agent.
 
+**Stage 3 results (2026-10-08):** implemented as listed above, with these source-verified findings and decisions:
+- Both adapters key on `clientCapabilities._meta.terminal_output` (Claude also on `_meta["terminal-auth"]`). Live: Codex `printf` output and a Claude `bash` loop stream into their tool cards with exit chips.
+- Steering params: `{sessionId, prompt, _meta: {steering: {idleBehavior: "promptRequired"}}}`. Live with Claude: a message sent during a running bash loop was answered in the same turn. Codex 2.1.1 ignores `idleBehavior` (detached-turn race), so acp-tsp queues for Codex (`quirks::steering`).
+- Codex `api-key` auth reads `CODEX_API_KEY`, then `OPENAI_API_KEY` (or `authenticate._meta["api-key"].apiKey`); acp-tsp relies on the environment and never prompts for or records keys.
+- Goal (`_session/goal`) and async-task controls are advertised by both adapters only to JetBrains AIR clients; acp-tsp does not claim AIR, so the agents' own `/goal` command remains the path.
+- `_auth/status_update` → account chip (e-mail only in the details sheet). Recorder (`ACP_TSP_RECORD`) redacts auth status, e-mails, API keys/tokens and MCP `env`/`headers`; files are created `0600`.
+- Fixtures: `tests/fixtures/claude/read_and_list.jsonl`, `tests/fixtures/codex/{command,read_only_plan}.jsonl` replayed through ACP → model → view in `tests/replay_agents.rs`.
+- agy: `acp-tsp agents install agy` installs registry 1.3.0 (no registry checksum published; the installer warns); its server SIGILLs on this host, so the agy column of §5 stays unverified.
+- Live-found polish: Tern hides status segments that overflow; the dock now drops steady-state text so mode/model/effort chips stay visible.
+
 ---
 
 ## 5. Agent capability matrix (source-confirmed; agy pending probe)
