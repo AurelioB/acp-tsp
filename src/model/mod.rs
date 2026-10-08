@@ -80,6 +80,8 @@ pub struct TurnSummary {
     pub duration: std::time::Duration,
     pub tokens: Option<(u64, u64, u64)>,
     pub cost: Option<(String, f64)>,
+    /// Why the turn ended, when it did not simply finish (`end_turn`).
+    pub stop: Option<StopReason>,
 }
 
 impl Entry {
@@ -435,11 +437,20 @@ impl Model {
                     (current.currency.clone(), (current.amount - before).max(0.0))
                 });
                 let tokens = tokens.or_else(|| self.content.usage.as_ref().and_then(|usage| self.turn_context_at_start.map(|start| (usage.used.saturating_sub(start), 0, 0))));
-                if let Some(start) = self.turn_started.take() {
+                let stop = match &result {
+                    Ok(StopReason::EndTurn) | Err(_) => None,
+                    Ok(reason) => Some(*reason),
+                };
+                // The stop reason shows on the turn's own footer; a notice is only for turns
+                // without one, so it never lands detached at the end of the transcript.
+                let summarized = if let Some(start) = self.turn_started.take() {
                     self.turn_summaries.insert(self.active_turn_id, TurnSummary {
-                        duration: start.elapsed(), tokens, cost,
+                        duration: start.elapsed(), tokens, cost, stop,
                     });
-                }
+                    true
+                } else {
+                    false
+                };
                 for entry in &mut self.transcript {
                     if entry.turn_id == self.active_turn_id
                         && matches!(entry.kind, EntryKind::Thought { .. })
@@ -462,6 +473,7 @@ impl Model {
                 }
                 match result {
                     Ok(StopReason::EndTurn) => {}
+                    Ok(_) if summarized => {}
                     Ok(reason) => self.notices.push(format!("Turn ended: {reason:?}")),
                     Err(error) => self.errors.push(error),
                 }

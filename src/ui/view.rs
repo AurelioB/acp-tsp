@@ -1,14 +1,14 @@
 //! Whole-view rendering from session state; no terminal I/O.
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, PlanEntryStatus, SessionConfigOptionCategory, ToolCallStatus,
+    ContentBlock, PlanEntryStatus, SessionConfigOptionCategory, StopReason, ToolCallStatus,
 };
 use chrono::{DateTime, Local};
 use tern_sdk::{
     Capabilities,
     ui::{
         self, Align, ChecklistItem, ChecklistMode, Gap, ItemStatus, MeterStyle, Node, Phase,
-        ShimmerMode, ShimmerPalette, SpinnerStyle, Thresholds, View,
+        ShimmerMode, ShimmerPalette, SpinnerStyle, Thresholds, Tone, View,
     },
 };
 
@@ -499,7 +499,15 @@ fn welcome(model: &Model) -> Node<Msg> {
 
 fn turn_usage(summary: &TurnSummary) -> ui::Row<Msg> {
     let seconds = summary.duration.as_secs_f64();
-    let mut text = format!("{seconds:.1}s");
+    let stopped = summary.stop.map(|reason| match reason {
+        StopReason::Cancelled => "Stopped",
+        StopReason::MaxTokens => "Hit the token limit",
+        StopReason::MaxTurnRequests => "Hit the request limit",
+        StopReason::Refusal => "Refused",
+        _ => "Ended early",
+    });
+    let mut text = stopped.map_or_else(String::new, |label| format!("{label} · "));
+    text.push_str(&format!("{seconds:.1}s"));
     let mut detail = format!("This turn: {seconds:.1}s");
     if let Some((total, input, output)) = summary.tokens {
         text.push_str(&format!(" · {total} tok"));
@@ -518,8 +526,11 @@ fn turn_usage(summary: &TurnSummary) -> ui::Row<Msg> {
         detail.push_str(&format!(" · {symbol}{cost:.2}"));
     }
     text.push_str(" this turn");
-    ui::row()
-        .key("turn-usage")
+    let mut row = ui::row();
+    if stopped.is_some() {
+        row = row.tone(Tone::Warning);
+    }
+    row.key("turn-usage")
         .role("omp.turn.usage")
         .gap(Gap::Xs)
         .align(Align::Center)

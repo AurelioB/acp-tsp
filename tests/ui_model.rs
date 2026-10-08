@@ -259,3 +259,28 @@ fn permissions_resolve_out_of_order_without_reordering_dialogs() {
     model.apply(BridgeEvent::Resolved(4));
     assert_eq!(model.oldest_permission().unwrap().id, 2);
 }
+
+#[test]
+fn stopped_turn_reports_on_its_own_footer_not_a_trailing_notice() {
+    let mut model = Model::default();
+    model.submitted("first".into());
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+        StopReason::Cancelled,
+    )))));
+    model.submitted("second".into());
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+        StopReason::EndTurn,
+    )))));
+    // A notice would render after every entry, detached from the turn it belongs to.
+    assert!(model.notices.is_empty());
+    let mut stops: Vec<_> = model
+        .turn_summaries
+        .iter()
+        .map(|(turn, s)| (*turn, s.stop))
+        .collect();
+    stops.sort_by_key(|(turn, _)| *turn);
+    assert_eq!(
+        stops.iter().map(|(_, stop)| *stop).collect::<Vec<_>>(),
+        [Some(StopReason::Cancelled), None]
+    );
+}
