@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -34,6 +34,9 @@ struct PendingPermission {
 struct Shared {
     session: Mutex<Option<SessionId>>,
     permissions: Mutex<BTreeMap<PendingId, PendingPermission>>,
+    /// Set between `session/cancel` and the end of that turn: permission requests the agent
+    /// sends meanwhile are answered `cancelled` without asking the user (spec MUST).
+    cancelling: AtomicBool,
 }
 
 impl Shared {
@@ -150,6 +153,9 @@ async fn drive(
                 async move |request: RequestPermissionRequest, responder: PermissionResponder, cx: ConnectionTo<Agent>| {
                     if permissions.session.lock().expect("session lock").as_ref() != Some(&request.session_id) {
                         return responder.respond_with_error(Error::invalid_params());
+                    }
+                    if permissions.cancelling.load(Ordering::SeqCst) {
+                        return responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
                     }
                     let id = NEXT_PERMISSION_ID.fetch_add(1, Ordering::Relaxed);
                     let cancellation = responder.cancellation();
@@ -302,8 +308,14 @@ async fn drive(
                         }
                         Some(UiCmd::Cancel) => {
                             queued.clear();
+                            // Flag first so a permission request racing this cancel is refused too.
+                            if running {
+                                shared.cancelling.store(true, Ordering::SeqCst);
+                            }
                             shared.resolve_all(&events);
-                            if running { cx.send_notification(CancelNotification::new(session_id.clone()))?; }
+                            if running {
+                                cx.send_notification(CancelNotification::new(session_id.clone()))?;
+                            }
                         }
                         Some(UiCmd::Permission { id, outcome }) => {
                             if !shared.answer(id, Ok(outcome)) { tracing::debug!(id, "ignoring unknown permission"); }
@@ -316,6 +328,7 @@ async fn drive(
                         if let Some(result) = result {
                             events.send(BridgeEvent::TurnEnded(result.map(|r| r.stop_reason).map_err(|e| e.to_string())));
                             running = false;
+                            shared.cancelling.store(false, Ordering::SeqCst);
                             if let Some(next) = queued.pop_front() {
                                 start_prompt(&cx, &session_id, next, &turn_tx)?;
                                 running = true;

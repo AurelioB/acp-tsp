@@ -222,8 +222,13 @@ async fn permission_selection_and_cancel_resolve_pending_and_return_cancelled() 
                                 PermissionOptionKind::AllowOnce,
                             )],
                         );
-                        let response = cx.send_request(permission).block_task().await?;
+                        let response = cx.send_request(permission.clone()).block_task().await?;
                         selected_tx.send(response.outcome).unwrap();
+                        if cancelled.load(Ordering::SeqCst) {
+                            // A request racing the cancel must be refused without the user.
+                            let late = cx.send_request(permission).block_task().await?;
+                            selected_tx.send(late.outcome).unwrap();
+                        }
                         let stop = if cancelled.load(Ordering::SeqCst) {
                             StopReason::Cancelled
                         } else {
@@ -282,6 +287,16 @@ async fn permission_selection_and_cancel_resolve_pending_and_return_cancelled() 
         selected_rx.recv().await.unwrap(),
         RequestPermissionOutcome::Cancelled
     ));
+    assert!(
+        matches!(
+            tokio::time::timeout(Duration::from_secs(5), selected_rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            RequestPermissionOutcome::Cancelled
+        ),
+        "late permission after cancel must be answered cancelled"
+    );
     let ended = until(&rx, |event| {
         matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::Cancelled)))
     })
@@ -290,6 +305,12 @@ async fn permission_selection_and_cancel_resolve_pending_and_return_cancelled() 
         ended
             .iter()
             .any(|event| matches!(event, BridgeEvent::Resolved(actual) if *actual == id))
+    );
+    assert!(
+        !ended
+            .iter()
+            .any(|event| matches!(event, BridgeEvent::Permission { .. })),
+        "late permission must not reach the UI"
     );
     cmd.send(UiCmd::Permission {
         id,
