@@ -364,3 +364,36 @@ fn shift_tab_cycles_to_the_next_mode() {
         "got {cmds:?}"
     );
 }
+
+#[test]
+fn native_edits_build_the_prompt_and_enter_sends_it_once() {
+    // Tern's native editing path: edit events (UTF-16 offsets, `len` = what Tern saw), not keys.
+    let edit = |from: u32, to: u32, text: &str, cursor: u32, len: u32| {
+        let body = serde_json::json!({"ev":"edit","sf":"s1","id":"dock.editor.line.ed",
+            "from":from,"to":to,"text":text,"cursor":cursor,"len":len});
+        format!("\x1b_tsp;e;{body}\x1b\\")
+    };
+    let script = [
+        edit(0, 0, "hi", 2, 0),
+        edit(2, 2, "\nthere", 8, 2),
+        // Stale: Tern saw 3 units, the composer has 8; must be ignored, not applied.
+        edit(0, 1, "X", 1, 3),
+        edit(3, 8, "théré", 8, 8),
+        "\r".into(),
+        "\x1b[27u\x04".into(),
+    ]
+    .concat();
+    let (_, cmds) = drive(script.as_bytes(), None);
+    let prompts: Vec<_> = cmds
+        .iter()
+        .filter_map(|cmd| match cmd {
+            UiCmd::Prompt(blocks) => Some(blocks),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts.len(), 1, "got {cmds:?}");
+    assert!(
+        matches!(&prompts[0][0], agent_client_protocol::schema::v1::ContentBlock::Text(t) if t.text == "hi\nthéré"),
+        "got {prompts:?}"
+    );
+}
