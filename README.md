@@ -165,7 +165,7 @@ issue, not a general agy requirement.
 | r / Escape (usage dashboard) | refresh the adapter's local usage report / close |
 | PageUp / PageDown (transcript) | jump between user prompts; PageDown past the newest prompt returns to the last entry |
 | PageUp / PageDown (picker, usage Details, settings, focused terminal output) | scroll the active container without moving the transcript |
-| Ctrl+Z (no dialog open) | return to the shell; `fg` brings the same view back. The agent keeps running meanwhile (it has its own process group); its output is shown on `fg`. Not yet tried in a real Tern window |
+| Ctrl+Z (no dialog open) | return to the shell; `fg` brings the same view back. The agent is not stopped with acp-tsp (the ACP SDK gives it its own process group); its messages queue in the pipe and appear on `fg`, and an adapter that fills the pipe waits until then. Not yet tried in a real Tern window |
 | Click active configuration chip (for example, Codex Plan) | return that select option to its default |
 | ↑ ↓ | prompt history |
 | Escape, Ctrl+C | cancel the running turn |

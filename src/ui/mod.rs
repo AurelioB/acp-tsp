@@ -160,7 +160,8 @@ pub fn run_with_terminal_stop(
 fn stop_job() -> std::io::Result<()> {
     // Stops acp-tsp's own process group, as the shell's Ctrl+Z would. The ACP SDK starts the
     // adapter in a process group of its own (observed: `npm exec` leads a separate pgid), so the
-    // agent keeps running; its messages wait in the pipe until `fg`.
+    // agent is not stopped; its messages wait in the pipe until `fg` (an adapter that fills the
+    // pipe blocks until then).
     rustix::process::kill_current_process_group(rustix::process::Signal::TSTP)
         .map_err(std::io::Error::from)
 }
