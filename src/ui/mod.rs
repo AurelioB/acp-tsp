@@ -108,7 +108,10 @@ pub fn run_with_terminal(
         let action =
             match input {
                 Input::Key(key) => {
-                    tracing::debug!(name = %key.name, ctrl = key.ctrl, "key");
+                    // Printable keys are user content: log only named keys.
+                    if key.typed().is_none() {
+                        tracing::debug!(name = %key.name, ctrl = key.ctrl, "key");
+                    }
                     input_state.key(&key, &mut model, &mut composer)
                 }
                 Input::Msg(message, _) => match message {
@@ -172,6 +175,10 @@ pub fn run_with_terminal(
         let mut changed = matches!(action, Action::Changed);
         match action {
             Action::Command(cmd) => {
+                // The ACP side answers silently; the dialog closes on the user's answer.
+                if let UiCmd::Permission { id, .. } = &cmd {
+                    model.apply(crate::event::BridgeEvent::Resolved(*id));
+                }
                 if cmds.send(cmd).is_err() {
                     model.restartable = false;
                     model.apply(crate::event::BridgeEvent::AgentExited {
