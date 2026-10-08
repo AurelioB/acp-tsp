@@ -165,3 +165,18 @@ fn many_entries_have_unique_wire_ids() {
         visit(tree, &mut ids);
     }
 }
+
+#[test]
+fn auth_picker_is_a_child_of_the_layer_region() {
+    // A region root draws no element in Tern: a picker given as the root is invisible.
+    let mut model = Model::default();
+    model.apply(BridgeEvent::AuthRequired {
+        methods: vec![agent_client_protocol::schema::v1::AuthMethod::Agent(
+            agent_client_protocol::schema::v1::AuthMethodAgent::new("login", "Log in"),
+        )],
+        message: None,
+    });
+    let layer = &wire(&model)["layer"];
+    assert_eq!(layer["k"], "col");
+    assert_eq!(layer["c"][0]["k"], "picker");
+}

@@ -620,9 +620,9 @@ fn screen(
     let mut view = view::view_with(model, composer, caps, form, Some(picker));
     if model.dialogs.front().is_none() && model.auth.is_none() && !picker.open {
         if let Some(palette) = palette {
-            view = view.layer(palette.render(model));
+            view = view.layer(view::layer(palette.render(model)));
         } else if config_open {
-            view = view.layer(prefs::render(model));
+            view = view.layer(view::layer(prefs::render(model)));
         }
     }
     view

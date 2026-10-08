@@ -12,6 +12,12 @@ use tern_sdk::{
 use super::{Msg, auth, composer::Composer, prefs};
 use crate::model::{EntryKind, Model, Turn};
 
+/// Layer content as a child of the region: a region root draws no element of its own
+/// (TSP), so a `picker`/`prefs`/`card` given as the root would be invisible.
+pub fn layer(node: impl Into<Node<Msg>>) -> Node<Msg> {
+    ui::col().child(node).into()
+}
+
 pub fn view(model: &Model, composer: &Composer, caps: &Capabilities) -> View<Msg> {
     view_with(
         model,
@@ -404,6 +410,7 @@ pub fn view_with(
     );
     let mut result = View::new().main(main).dock(dock);
     if let Some(request) = model.oldest_elicitation() {
+        // `elicit::dialog` already returns the region's `col`.
         result = result.layer(super::elicit::dialog(request.id, &request.request, form));
     } else if let Some(permission) = model.visible_permission() {
         let id = permission.id;
@@ -424,9 +431,9 @@ pub fn view_with(
         }
         result = result.layer(ui::col().child(dialog));
     } else if let Some(auth) = &model.auth {
-        result = result.layer(auth::picker(auth, model.auth_selected));
+        result = result.layer(layer(auth::picker(auth, model.auth_selected)));
     } else if let Some(picker) = picker.filter(|p| p.open) {
-        result = result.layer(picker.view());
+        result = result.layer(layer(picker.view()));
     } else if let Some(reason) = &model.exited {
         result = result.layer(
             ui::col().child(
