@@ -157,7 +157,9 @@ fn closed_agent_stays_visible_until_ctrl_d() {
     );
     let output = String::from_utf8(pipes.borrow().output.clone()).unwrap();
     assert!(output.contains("Agent connection closed"));
-    assert!(output.contains("Press Ctrl+D to quit"));
+    // The exit dialog offers Quit (Ctrl+D) but no Restart: the ACP side is gone.
+    assert!(output.contains("\"key\":\"quit\""));
+    assert!(!output.contains("\"key\":\"restart\""));
     assert!(pipes.borrow().restored);
 }
 

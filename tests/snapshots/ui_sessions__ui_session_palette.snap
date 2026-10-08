@@ -9,7 +9,7 @@ expression: "layer(View::new().layer(Palette::new(Kind::Commands).render(&model)
     "key": "complete",
     "role": "omp.autocomplete",
     "anchor": {
-      "caret": "dock.ed"
+      "caret": "dock.editor.line.ed"
     }
   },
   "c": [

@@ -350,7 +350,7 @@ impl Palette {
             return ui::overlay()
                 .key("complete")
                 .role("omp.autocomplete")
-                .anchor(Anchor::Caret("dock.ed".into()))
+                .anchor(Anchor::Caret(crate::ui::view::EDITOR_ID.into()))
                 .child(ui::col().role("omp.select").child(list))
                 .into();
         }

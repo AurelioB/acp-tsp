@@ -21,6 +21,8 @@ pub struct Entry {
     pub id: u64,
     // Turn during which the entry was received (queued local prompts are
     // received in the preceding turn). Only tools use it for cancellation.
+    pub at: std::time::SystemTime,
+    pub finished_at: Option<std::time::SystemTime>,
     turn_id: u64,
     pub kind: EntryKind,
 }
@@ -72,6 +74,20 @@ pub enum EntryKind {
     Usage(agent_client_protocol::schema::v1::Usage),
 }
 
+/// Finished turn facts, attached to the last assistant message rather than a separate status line.
+#[derive(Debug, Clone)]
+pub struct TurnSummary {
+    pub duration: std::time::Duration,
+    pub tokens: Option<(u64, u64, u64)>,
+    pub cost: Option<(String, f64)>,
+}
+
+impl Entry {
+    pub fn turn_id(&self) -> u64 {
+        self.turn_id
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingPermission {
     pub id: PendingId,
@@ -114,6 +130,7 @@ pub struct Model {
     pub agent: Option<Implementation>,
     pub prompt_capabilities: agent_client_protocol::schema::v1::PromptCapabilities,
     pub auth: Option<AuthPrompt>,
+    pub launch_name: String,
     pub auth_selected: usize,
     pub capabilities: AgentCapabilities,
     pub sessions: SessionCatalog,
@@ -122,6 +139,10 @@ pub struct Model {
     pub turn: Turn,
     pub queued: usize,
     pub transcript: Vec<Entry>,
+    pub turn_summaries: std::collections::HashMap<u64, TurnSummary>,
+    turn_started: Option<Instant>,
+    turn_cost_at_start: Option<(String, f64)>,
+    turn_context_at_start: Option<u64>,
     pub permissions: VecDeque<PendingPermission>,
     pub elicitations: VecDeque<PendingElicitation>,
     pub dialogs: VecDeque<PendingId>,
@@ -147,6 +168,7 @@ impl Default for Model {
             prompt_capabilities: Default::default(),
             agent: None,
             capabilities: AgentCapabilities::default(),
+            launch_name: "Agent".into(),
             sessions: SessionCatalog::default(),
             auth: None,
             auth_selected: 0,
@@ -154,6 +176,10 @@ impl Default for Model {
             loading_info: None,
             turn: Turn::Idle,
             queued: 0,
+            turn_summaries: Default::default(),
+            turn_started: None,
+            turn_cost_at_start: None,
+            turn_context_at_start: None,
             transcript: Vec::new(),
             permissions: VecDeque::new(),
             elicitations: VecDeque::new(),
@@ -175,10 +201,19 @@ impl Default for Model {
 
 impl Model {
     fn push(&mut self, kind: EntryKind) {
+        let finished_at = matches!(&kind, EntryKind::Tool { call, .. } if matches!(call.status, ToolCallStatus::Completed | ToolCallStatus::Failed)).then(std::time::SystemTime::now);
+        if let Some(last) = self.transcript.last_mut()
+            && matches!(last.kind, EntryKind::Thought { .. })
+            && last.finished_at.is_none()
+        {
+            last.finished_at = Some(std::time::SystemTime::now());
+        }
         self.next_id += 1;
         self.transcript.push(Entry {
             id: self.next_id,
             turn_id: self.active_turn_id,
+            at: std::time::SystemTime::now(),
+            finished_at,
             kind,
         });
     }
@@ -187,6 +222,14 @@ impl Model {
     pub fn submitted(&mut self, text: String) {
         if matches!(self.turn, Turn::Idle) {
             self.active_turn_id += 1;
+            self.turn_started = Some(Instant::now());
+            self.turn_cost_at_start = self
+                .content
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.cost.as_ref())
+                .map(|cost| (cost.currency.clone(), cost.amount));
+            self.turn_context_at_start = self.content.usage.as_ref().map(|usage| usage.used);
             self.turn = Turn::Running {
                 since: Instant::now(),
                 cancelling: false,
@@ -242,6 +285,10 @@ impl Model {
                 self.auth = None;
                 self.turn = Turn::Idle;
                 self.queued = 0;
+                self.turn_summaries.clear();
+                self.turn_started = None;
+                self.turn_cost_at_start = None;
+                self.turn_context_at_start = None;
                 self.local_echo = None;
                 self.queued_echoes.clear();
                 self.transcript.clear();
@@ -366,6 +413,40 @@ impl Model {
                     self.push(EntryKind::Usage(delta));
                 }
                 let result = result.map(|response| response.stop_reason);
+                let tokens = {
+                    #[cfg(feature = "unstable_end_turn_token_usage")]
+                    {
+                        self.transcript.last().and_then(|entry| match &entry.kind {
+                            EntryKind::Usage(usage) => Some((
+                                usage.total_tokens,
+                                usage.input_tokens,
+                                usage.output_tokens,
+                            )),
+                            _ => None,
+                        })
+                    }
+                    #[cfg(not(feature = "unstable_end_turn_token_usage"))]
+                    {
+                        None
+                    }
+                };
+                let cost = self.content.usage.as_ref().and_then(|usage| usage.cost.as_ref()).map(|current| {
+                    let before = self.turn_cost_at_start.as_ref().filter(|(currency, _)| currency == &current.currency).map_or(0.0, |(_, amount)| *amount);
+                    (current.currency.clone(), (current.amount - before).max(0.0))
+                });
+                let tokens = tokens.or_else(|| self.content.usage.as_ref().and_then(|usage| self.turn_context_at_start.map(|start| (usage.used.saturating_sub(start), 0, 0))));
+                if let Some(start) = self.turn_started.take() {
+                    self.turn_summaries.insert(self.active_turn_id, TurnSummary {
+                        duration: start.elapsed(), tokens, cost,
+                    });
+                }
+                for entry in &mut self.transcript {
+                    if entry.turn_id == self.active_turn_id
+                        && matches!(entry.kind, EntryKind::Thought { .. })
+                        && entry.finished_at.is_none() {
+                        entry.finished_at = Some(std::time::SystemTime::now());
+                    }
+                }
                 if matches!(result, Ok(StopReason::Cancelled)) {
                     for entry in &mut self.transcript {
                         if entry.turn_id == self.active_turn_id
@@ -393,6 +474,9 @@ impl Model {
                         since: Instant::now(),
                         cancelling: false,
                     };
+                    self.turn_started = Some(Instant::now());
+                    self.turn_cost_at_start = self.content.usage.as_ref().and_then(|usage| usage.cost.as_ref()).map(|cost| (cost.currency.clone(), cost.amount));
+                    self.turn_context_at_start = self.content.usage.as_ref().map(|usage| usage.used);
                 } else {
                     self.turn = Turn::Idle;
                 }
@@ -513,6 +597,9 @@ impl Model {
             SessionUpdate::ToolCall(call) => {
                 self.ext.tool(&call.tool_call_id, call.meta.as_ref());
                 if let Some(entry) = self.tool_mut(&call.tool_call_id) {
+                    if matches!(call.status, ToolCallStatus::Completed | ToolCallStatus::Failed) && entry.finished_at.is_none() {
+                        entry.finished_at = Some(std::time::SystemTime::now());
+                    }
                     entry.kind = EntryKind::Tool {
                         call: Box::new(call),
                         cancelled: false,
@@ -529,6 +616,9 @@ impl Model {
                 if let Some(entry) = self.tool_mut(&update.tool_call_id) {
                     if let EntryKind::Tool { call, .. } = &mut entry.kind {
                         call.update(update.fields);
+                        if matches!(call.status, ToolCallStatus::Completed | ToolCallStatus::Failed) && entry.finished_at.is_none() {
+                            entry.finished_at = Some(std::time::SystemTime::now());
+                        }
                     }
                 } else {
                     let mut call = ToolCall::new(update.tool_call_id, "Tool call");

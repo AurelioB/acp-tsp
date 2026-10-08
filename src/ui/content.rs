@@ -197,6 +197,34 @@ pub fn blocks(blocks: &[ContentBlock], prefix: &str, model: &Model) -> Vec<Node<
         .collect()
 }
 
+/// Attachment links form chips in the user bubble; markdown keeps file URIs clickable.
+pub fn user_blocks(blocks: &[ContentBlock], model: &Model) -> Vec<Node<Msg>> {
+    let mut body = Vec::new();
+    let mut attachments = ui::row()
+        .key("attachments")
+        .role("omp.user.images")
+        .gap(ui::Gap::Sm)
+        .wrap(true);
+    let mut attached = false;
+    for (i, block) in blocks.iter().enumerate() {
+        match block {
+            ContentBlock::ResourceLink(link) => {
+                attachments = attachments.child(
+                    ui::md(crate::model::resource_link_markdown(&link.name, &link.uri))
+                        .key(format!("attachment.{i}"))
+                        .role("omp.user.attachment"),
+                );
+                attached = true;
+            }
+            other => body.push(self::block(other, format!("body.{i}"), model)),
+        }
+    }
+    if attached {
+        body.insert(0, attachments.into());
+    }
+    body
+}
+
 pub fn terminal(
     id: &TerminalId,
     state: Option<&TerminalBuffer>,

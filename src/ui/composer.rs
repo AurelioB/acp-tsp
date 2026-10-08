@@ -76,7 +76,7 @@ impl Composer {
     /// Reject events against a stale editor version or splitting a surrogate pair.
     pub fn edit(&mut self, edit: &Edit) -> bool {
         let length: usize = self.text.encode_utf16().count();
-        if edit.id != "dock.ed" || edit.len != length || edit.from > edit.to {
+        if edit.id != crate::ui::view::EDITOR_ID || edit.len != length || edit.from > edit.to {
             return false;
         }
         let (Some(from), Some(to)) = (self.char_at_utf16(edit.from), self.char_at_utf16(edit.to))
@@ -174,14 +174,14 @@ mod tests {
         let mut c = Composer::default();
         c.insert("a😀z");
         let e = edit(
-            serde_json::json!({"ev":"edit","id":"dock.ed","from":1,"to":3,"text":"é","cursor":2,"len":4}),
+            serde_json::json!({"ev":"edit","id":crate::ui::view::EDITOR_ID,"from":1,"to":3,"text":"é","cursor":2,"len":4}),
         );
         assert!(c.edit(&e));
         assert_eq!((c.text.as_str(), c.utf16_cursor()), ("aéz", 2));
         assert!(!c.edit(&e));
         c.undo();
         let split = edit(
-            serde_json::json!({"ev":"edit","id":"dock.ed","from":2,"to":3,"text":"x","cursor":3,"len":4}),
+            serde_json::json!({"ev":"edit","id":crate::ui::view::EDITOR_ID,"from":2,"to":3,"text":"x","cursor":3,"len":4}),
         );
         assert!(!c.edit(&split));
     }

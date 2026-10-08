@@ -12,6 +12,7 @@ pub mod permission;
 pub mod prefs;
 #[cfg(feature = "unstable_llm_providers")]
 mod providers;
+mod theme;
 pub mod view;
 
 use std::path::PathBuf;
@@ -61,6 +62,13 @@ pub enum Msg {
     Edit(wire::Edit),
     Undo,
     Focus,
+    Submit,
+    Interrupt,
+    ContextDetails,
+    ModelPicker,
+    EffortPicker,
+    Restart,
+    Quit,
     Permission(u64, PermissionOptionId),
     PermissionDismiss(u64),
     Authenticate(AuthMethodId),
@@ -68,8 +76,6 @@ pub enum Msg {
     PickerActivate(String),
     PickerConfirm,
     PickerClose,
-    ModelPicker,
-    EffortPicker,
     AuthSelect(String),
     AuthActivate(String),
     AuthQuit,
@@ -140,11 +146,13 @@ fn run_with_controller(
     };
     let sf = session.open(
         SurfaceOptions::inline()
-            .title(options.agent)
-            .role("acp-tsp.session"),
+            .title(options.agent.clone())
+            .role("omp.session"),
     )?;
+    session.palette(sf, theme::palette())?;
     on_connected();
     let mut model = Model::default();
+    model.launch_name = options.agent.clone();
     let mut composer = Composer::default();
     let mut input_state = InputState::default();
     let mut palette: Option<Palette> = None;
@@ -153,6 +161,7 @@ fn run_with_controller(
     let mut form = elicit::FormState::default();
     let mut picker = attach::AttachPicker::default();
     let mut focused_terminal: Option<TerminalId> = None;
+    let mut settled_entries = std::collections::HashSet::new();
     // Drain before the first frame too: startup notifications may already be queued.
     match events.drain() {
         Some(batch) => {
@@ -183,12 +192,13 @@ fn run_with_controller(
             &picker,
         ),
     )?;
+    settle_finished(&mut session, sf, &model, &mut settled_entries)?;
     if let Some(request) = model.oldest_elicitation() {
         if let Some(id) = elicit::first_field(&request.request) {
             session.focus(sf, Some(&id))?;
         }
     } else {
-        session.focus(sf, Some("dock.ed"))?;
+        session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
     }
     while let Some(input) = session.next(None)? {
         let elicitation_before = form.id;
@@ -348,6 +358,45 @@ fn run_with_controller(
                         input::submit(&mut model, &mut composer)
                     }
                 }
+                Msg::ModelPicker if !composer_blocked => {
+                    palette = Some(Palette::new(Kind::Model));
+                    Action::Changed
+                }
+                Msg::EffortPicker if !composer_blocked => {
+                    palette = Some(Palette::new(Kind::Effort));
+                    Action::Changed
+                }
+                Msg::ModelPicker | Msg::EffortPicker => Action::None,
+                Msg::Submit if !composer_blocked => {
+                    if let Some(choice) = palette::typed_client_command(&composer.text, &model) {
+                        composer = Composer::default();
+                        palette_choice(choice, &mut palette, &mut config_open, &mut composer)
+                    } else {
+                        input::submit(&mut model, &mut composer)
+                    }
+                }
+                Msg::Interrupt if matches!(model.turn, crate::model::Turn::Running { .. }) => {
+                    model.cancel();
+                    Action::Command(UiCmd::Cancel)
+                }
+                Msg::ContextDetails => {
+                    if let Some(usage) = &model.content.usage {
+                        model.ext.toast =
+                            Some(format!("Context: {} of {} tokens", usage.used, usage.size));
+                        Action::Changed
+                    } else {
+                        Action::None
+                    }
+                }
+                Msg::Restart if model.exited.is_some() && model.restartable => {
+                    model.exited = None;
+                    model.session = None;
+                    model.status = "Restarting".into();
+                    Action::Command(UiCmd::Restart)
+                }
+                Msg::Quit => Action::Quit,
+                Msg::Restart => Action::None,
+                Msg::Submit | Msg::Interrupt => Action::None,
                 Msg::Edit(edit) if !composer_blocked => {
                     if composer.edit(&edit) {
                         focused_terminal = None;
@@ -386,7 +435,7 @@ fn run_with_controller(
                 }
                 Msg::Focus if !composer_blocked => {
                     focused_terminal = None;
-                    session.focus(sf, Some("dock.ed"))?;
+                    session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
                     Action::None
                 }
                 Msg::Send(_) | Msg::Edit(_) | Msg::Undo | Msg::Focus => Action::None,
@@ -531,14 +580,6 @@ fn run_with_controller(
                     palette = None;
                     Action::Changed
                 }
-                Msg::ModelPicker if !dialog_before => {
-                    palette = Some(Palette::new(Kind::Model));
-                    Action::Changed
-                }
-                Msg::EffortPicker if !dialog_before => {
-                    palette = Some(Palette::new(Kind::Effort));
-                    Action::Changed
-                }
                 Msg::PickerSelect(id) if palette.is_some() => {
                     let choice = palette
                         .as_mut()
@@ -639,8 +680,6 @@ fn run_with_controller(
                 Msg::AuthQuit
                 | Msg::PickerConfirm
                 | Msg::PickerClose
-                | Msg::ModelPicker
-                | Msg::EffortPicker
                 | Msg::PickerSelect(_)
                 | Msg::PickerActivate(_)
                 | Msg::ConfigChange(_, _)
@@ -723,6 +762,7 @@ fn run_with_controller(
                         composer = Composer::default();
                         picker = attach::AttachPicker::default();
                         focused_terminal = None;
+                        settled_entries.clear();
                     }
                     model.apply(event);
                 }
@@ -748,7 +788,7 @@ fn run_with_controller(
         }
         if dialog_before && model.dialogs.front().is_none() && model.auth.is_none() && !picker.open
         {
-            session.focus(sf, Some("dock.ed"))?;
+            session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
         }
         if changed {
             content::upload(&mut session, &mut model)?;
@@ -764,6 +804,7 @@ fn run_with_controller(
                     &picker,
                 ),
             )?;
+            settle_finished(&mut session, sf, &model, &mut settled_entries)?;
             if form.id != elicitation_before
                 && let Some(request) = model.oldest_elicitation()
                 && let Some(id) = elicit::first_field(&request.request)
@@ -775,6 +816,34 @@ fn run_with_controller(
     let _ = cmds.send(UiCmd::Shutdown);
     session.close()?;
     Ok(UiExit::Quit)
+}
+
+/// Let Tern move finished transcript rows out of the live diff set.
+fn settle_finished(
+    session: &mut Session<Msg>,
+    sf: tern_sdk::Surface,
+    model: &Model,
+    settled: &mut std::collections::HashSet<u64>,
+) -> anyhow::Result<()> {
+    for entry in &model.transcript {
+        let finished = match &entry.kind {
+            crate::model::EntryKind::Tool { call, cancelled } => {
+                *cancelled
+                    || matches!(
+                        call.status,
+                        agent_client_protocol::schema::v1::ToolCallStatus::Completed
+                            | agent_client_protocol::schema::v1::ToolCallStatus::Failed
+                    )
+            }
+            crate::model::EntryKind::Agent { .. } => !model.is_streaming(entry),
+            crate::model::EntryKind::Thought { .. } => entry.finished_at.is_some(),
+            _ => false,
+        };
+        if finished && settled.insert(entry.id) {
+            session.settle(sf, &format!("main.entry.{}", entry.id))?;
+        }
+    }
+    Ok(())
 }
 
 fn screen(

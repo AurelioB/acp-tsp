@@ -11,13 +11,158 @@ expression: wire(&model)
     },
     "c": [
       {
+        "id": "main.welcome.before",
+        "k": "spacer",
+        "p": {
+          "key": "welcome.before",
+          "size": "sm"
+        }
+      },
+      {
+        "id": "main.welcome",
+        "k": "card",
+        "p": {
+          "key": "welcome",
+          "role": "omp.welcome"
+        },
+        "c": [
+          {
+            "id": "main.welcome.lockup",
+            "k": "row",
+            "p": {
+              "key": "lockup",
+              "role": "omp.welcome.lockup",
+              "align": "center",
+              "gap": "md"
+            },
+            "c": [
+              {
+                "id": "main.welcome.lockup.glyph",
+                "k": "text",
+                "p": {
+                  "text": "✦",
+                  "key": "glyph",
+                  "role": "omp.welcome.logo",
+                  "tone": "accent",
+                  "title": "Agent"
+                }
+              },
+              {
+                "id": "main.welcome.lockup.mark",
+                "k": "col",
+                "p": {
+                  "key": "mark",
+                  "role": "omp.welcome.mark"
+                },
+                "c": [
+                  {
+                    "id": "main.welcome.lockup.mark.wordmark",
+                    "k": "text",
+                    "p": {
+                      "spans": [
+                        {
+                          "t": "Agent",
+                          "s": "strong"
+                        }
+                      ],
+                      "key": "wordmark",
+                      "role": "omp.welcome.wordmark"
+                    }
+                  },
+                  {
+                    "id": "main.welcome.lockup.mark.version",
+                    "k": "text",
+                    "p": {
+                      "spans": [
+                        {
+                          "t": "Connecting…",
+                          "s": "dim mono"
+                        }
+                      ],
+                      "key": "version",
+                      "role": "omp.welcome.version"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "main.welcome.tip",
+            "k": "row",
+            "p": {
+              "key": "tip",
+              "role": "omp.welcome.tip",
+              "gap": "sm",
+              "align": "start"
+            },
+            "c": [
+              {
+                "id": "main.welcome.tip.icon",
+                "k": "icon",
+                "p": {
+                  "name": "folder",
+                  "key": "icon",
+                  "role": "omp.welcome.tip-icon"
+                }
+              },
+              {
+                "id": "main.welcome.tip.text",
+                "k": "text",
+                "p": {
+                  "text": "Starting session…  ·  / commands  ·  @ files",
+                  "key": "text",
+                  "role": "omp.welcome.tip-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "main.welcome.after",
+        "k": "spacer",
+        "p": {
+          "key": "welcome.after",
+          "size": "sm"
+        }
+      },
+      {
         "id": "main.entry.1",
         "k": "card",
         "p": {
           "key": "entry.1",
+          "role": "omp.user",
           "tone": "user"
         },
         "c": [
+          {
+            "id": "main.entry.1.tools",
+            "k": "row",
+            "p": {
+              "key": "tools",
+              "gap": "xs",
+              "role": "omp.user.tools"
+            },
+            "c": [
+              {
+                "id": "main.entry.1.tools.time",
+                "k": "text",
+                "p": {
+                  "spans": [
+                    {
+                      "t": "<time>",
+                      "s": "dim mono"
+                    }
+                  ],
+                  "key": "time",
+                  "role": "omp.user.time",
+                  "title": "<timestamp>",
+                  "text": "<time>"
+                }
+              }
+            ]
+          },
           {
             "id": "main.entry.1.body.0",
             "k": "md",
@@ -33,11 +178,25 @@ expression: wire(&model)
         "k": "section",
         "p": {
           "key": "entry.2",
-          "head": "Thinking",
+          "role": "omp.thinking",
           "collapsible": true,
-          "collapsed": false
+          "collapsed": true,
+          "took": 0
         },
         "c": [
+          {
+            "id": "main.entry.2.head",
+            "k": "text",
+            "p": {
+              "spans": [
+                {
+                  "t": "Thought for 0s",
+                  "s": "muted"
+                }
+              ],
+              "key": "head"
+            }
+          },
           {
             "id": "main.entry.2.body.0",
             "k": "md",
@@ -54,9 +213,13 @@ expression: wire(&model)
         "p": {
           "name": "edit",
           "key": "entry.3",
-          "title": "Edit source",
+          "role": "omp.tool.edit",
+          "title": "Edit",
           "status": "pending",
-          "collapsible": true
+          "frame": "inline",
+          "collapsible": false,
+          "collapsed": false,
+          "age": 0
         },
         "c": [
           {
@@ -84,6 +247,8 @@ expression: wire(&model)
         "k": "checklist",
         "p": {
           "key": "entry.4",
+          "role": "omp.hud.todo",
+          "mode": "hud",
           "phases": [
             {
               "id": "plan",
@@ -101,12 +266,22 @@ expression: wire(&model)
       },
       {
         "id": "main.entry.5",
-        "k": "md",
+        "k": "col",
         "p": {
-          "text": "Fixed.",
           "key": "entry.5",
-          "stream": true
-        }
+          "role": "omp.assistant"
+        },
+        "c": [
+          {
+            "id": "main.entry.5.body.0",
+            "k": "md",
+            "p": {
+              "text": "Fixed.",
+              "key": "body.0",
+              "stream": true
+            }
+          }
+        ]
       }
     ]
   },
@@ -115,64 +290,237 @@ expression: wire(&model)
     "k": "col",
     "c": [
       {
-        "id": "dock.bar",
-        "k": "status",
+        "id": "dock.activity",
+        "k": "row",
         "p": {
-          "key": "bar"
+          "key": "activity",
+          "role": "omp.hud.activity"
         },
         "c": [
           {
-            "id": "dock.bar.agent",
-            "k": "seg",
+            "id": "dock.activity.status",
+            "k": "col",
             "p": {
-              "text": "Agent",
-              "key": "agent"
-            }
-          },
-          {
-            "id": "dock.bar.state",
-            "k": "seg",
-            "p": {
-              "text": "Starting",
-              "key": "state"
-            }
-          },
-          {
-            "id": "dock.bar.turn",
-            "k": "seg",
-            "p": {
-              "text": "Working",
-              "key": "turn"
-            }
-          },
-          {
-            "id": "dock.bar.spinner",
-            "k": "spinner",
-            "p": {
-              "key": "spinner"
-            }
-          },
-          {
-            "id": "dock.bar.elapsed",
-            "k": "elapsed",
-            "p": {
-              "key": "elapsed",
-              "age": 0
-            }
+              "key": "status",
+              "role": "omp.hud.status"
+            },
+            "c": [
+              {
+                "id": "dock.activity.status.working",
+                "k": "row",
+                "p": {
+                  "key": "working",
+                  "role": "omp.working",
+                  "align": "center",
+                  "gap": "sm"
+                },
+                "c": [
+                  {
+                    "id": "dock.activity.status.working.spinner",
+                    "k": "spinner",
+                    "p": {
+                      "key": "spinner",
+                      "style": "starburst",
+                      "tone": "accent"
+                    }
+                  },
+                  {
+                    "id": "dock.activity.status.working.elapsed",
+                    "k": "elapsed",
+                    "p": {
+                      "key": "elapsed",
+                      "age": 0,
+                      "format": "short"
+                    }
+                  },
+                  {
+                    "id": "dock.activity.status.working.sep",
+                    "k": "text",
+                    "p": {
+                      "text": "·",
+                      "key": "sep",
+                      "role": "omp.working.sep"
+                    }
+                  },
+                  {
+                    "id": "dock.activity.status.working.label",
+                    "k": "shimmer",
+                    "p": {
+                      "text": "Working…",
+                      "key": "label",
+                      "role": "omp.working.label",
+                      "mode": "classic",
+                      "palette": {
+                        "low": "dim",
+                        "mid": "muted",
+                        "high": "accent"
+                      }
+                    }
+                  },
+                  {
+                    "id": "dock.activity.status.working.fill",
+                    "k": "row",
+                    "p": {
+                      "key": "fill",
+                      "grow": 1
+                    }
+                  },
+                  {
+                    "id": "dock.activity.status.working.stop",
+                    "k": "row",
+                    "p": {
+                      "key": "stop",
+                      "role": "omp.working.stop",
+                      "align": "center",
+                      "gap": "xs",
+                      "title": "Stop  Esc",
+                      "actions": {
+                        "click": "click"
+                      }
+                    },
+                    "c": [
+                      {
+                        "id": "dock.activity.status.working.stop.key",
+                        "k": "kbd",
+                        "p": {
+                          "keys": [
+                            "escape"
+                          ],
+                          "key": "key"
+                        }
+                      },
+                      {
+                        "id": "dock.activity.status.working.stop.text",
+                        "k": "text",
+                        "p": {
+                          "text": "Stop",
+                          "key": "text"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
           }
         ]
       },
       {
-        "id": "dock.ed",
-        "k": "editor",
+        "id": "dock.editor",
+        "k": "col",
         "p": {
-          "key": "ed",
-          "text": "",
-          "cursor": 0,
-          "placeholder": "Message (Enter sends · Shift+Enter newline)",
-          "readonly": false,
-          "sendable": true
-        }
+          "key": "editor",
+          "role": "omp.editor",
+          "tone": "pending"
+        },
+        "c": [
+          {
+            "id": "dock.editor.line",
+            "k": "row",
+            "p": {
+              "key": "line",
+              "role": "omp.composer.line",
+              "align": "start",
+              "gap": "sm"
+            },
+            "c": [
+              {
+                "id": "dock.editor.line.ed",
+                "k": "editor",
+                "p": {
+                  "key": "ed",
+                  "text": "",
+                  "cursor": 0,
+                  "placeholder": "Message Agent…",
+                  "maxLines": 18,
+                  "readonly": false,
+                  "sendable": true
+                }
+              }
+            ]
+          },
+          {
+            "id": "dock.editor.bar",
+            "k": "row",
+            "p": {
+              "key": "bar",
+              "role": "omp.composer.bar",
+              "gap": "sm",
+              "align": "center"
+            },
+            "c": [
+              {
+                "id": "dock.editor.bar.model",
+                "k": "row",
+                "p": {
+                  "key": "model",
+                  "role": "omp.composer.model",
+                  "gap": "xs",
+                  "align": "center",
+                  "title": "Switch model",
+                  "actions": {
+                    "click": "click"
+                  }
+                },
+                "c": [
+                  {
+                    "id": "dock.editor.bar.model.icon",
+                    "k": "icon",
+                    "p": {
+                      "name": "model",
+                      "key": "icon"
+                    }
+                  },
+                  {
+                    "id": "dock.editor.bar.model.name",
+                    "k": "text",
+                    "p": {
+                      "spans": [
+                        {
+                          "t": "Agent",
+                          "s": "statusLineModel"
+                        }
+                      ],
+                      "key": "name"
+                    }
+                  },
+                  {
+                    "id": "dock.editor.bar.model.chev",
+                    "k": "icon",
+                    "p": {
+                      "name": "chev",
+                      "key": "chev"
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "dock.editor.bar.extras",
+                "k": "status",
+                "p": {
+                  "key": "extras",
+                  "role": "omp.composer.extras",
+                  "transparent": true,
+                  "grow": 1
+                }
+              },
+              {
+                "id": "dock.editor.bar.send",
+                "k": "text",
+                "p": {
+                  "text": "Stop",
+                  "key": "send",
+                  "role": "omp.composer.stop",
+                  "tone": "error",
+                  "title": "Stop  Esc",
+                  "actions": {
+                    "click": "click"
+                  }
+                }
+              }
+            ]
+          }
+        ]
       }
     ]
   }

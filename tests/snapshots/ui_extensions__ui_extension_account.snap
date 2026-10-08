@@ -7,53 +7,136 @@ expression: "normal[\"dock\"]"
   "k": "col",
   "c": [
     {
-      "id": "dock.bar",
-      "k": "status",
+      "id": "dock.editor",
+      "k": "col",
       "p": {
-        "key": "bar"
+        "key": "editor",
+        "role": "omp.editor"
       },
       "c": [
         {
-          "id": "dock.bar.agent",
-          "k": "seg",
+          "id": "dock.editor.line",
+          "k": "row",
           "p": {
-            "text": "Agent",
-            "key": "agent"
-          }
-        },
-        {
-          "id": "dock.bar.state",
-          "k": "seg",
-          "p": {
-            "text": "Starting",
-            "key": "state"
-          }
-        },
-        {
-          "id": "dock.bar.account",
-          "k": "el",
-          "p": {
-            "tag": "button",
-            "text": "ChatGPT Pro",
-            "key": "account",
-            "actions": {
-              "click": "click"
+            "key": "line",
+            "role": "omp.composer.line",
+            "align": "start",
+            "gap": "sm"
+          },
+          "c": [
+            {
+              "id": "dock.editor.line.ed",
+              "k": "editor",
+              "p": {
+                "key": "ed",
+                "text": "",
+                "cursor": 0,
+                "placeholder": "Message Agent…",
+                "maxLines": 18,
+                "readonly": false,
+                "sendable": true
+              }
             }
-          }
+          ]
+        },
+        {
+          "id": "dock.editor.bar",
+          "k": "row",
+          "p": {
+            "key": "bar",
+            "role": "omp.composer.bar",
+            "gap": "sm",
+            "align": "center"
+          },
+          "c": [
+            {
+              "id": "dock.editor.bar.model",
+              "k": "row",
+              "p": {
+                "key": "model",
+                "role": "omp.composer.model",
+                "gap": "xs",
+                "align": "center",
+                "title": "Switch model",
+                "actions": {
+                  "click": "click"
+                }
+              },
+              "c": [
+                {
+                  "id": "dock.editor.bar.model.icon",
+                  "k": "icon",
+                  "p": {
+                    "name": "model",
+                    "key": "icon"
+                  }
+                },
+                {
+                  "id": "dock.editor.bar.model.name",
+                  "k": "text",
+                  "p": {
+                    "spans": [
+                      {
+                        "t": "Agent",
+                        "s": "statusLineModel"
+                      }
+                    ],
+                    "key": "name"
+                  }
+                },
+                {
+                  "id": "dock.editor.bar.model.chev",
+                  "k": "icon",
+                  "p": {
+                    "name": "chev",
+                    "key": "chev"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "dock.editor.bar.extras",
+              "k": "status",
+              "p": {
+                "key": "extras",
+                "role": "omp.composer.extras",
+                "transparent": true,
+                "grow": 1
+              },
+              "c": [
+                {
+                  "id": "dock.editor.bar.extras.account",
+                  "k": "seg",
+                  "p": {
+                    "text": "ChatGPT Pro",
+                    "key": "account",
+                    "role": "omp.composer.fact",
+                    "priority": 3.0,
+                    "actions": {
+                      "click": "click"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "id": "dock.editor.bar.send",
+              "k": "kbd",
+              "p": {
+                "keys": [
+                  "enter"
+                ],
+                "key": "send",
+                "role": "omp.composer.send",
+                "title": "Send  Enter",
+                "actions": {
+                  "click": "click"
+                }
+              }
+            }
+          ]
         }
       ]
-    },
-    {
-      "id": "dock.ed",
-      "k": "editor",
-      "p": {
-        "key": "ed",
-        "text": "",
-        "cursor": 0,
-        "placeholder": "Message (Enter sends · Shift+Enter newline)",
-        "readonly": false,
-        "sendable": true
-      }
     }
   ]
 }

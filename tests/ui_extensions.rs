@@ -86,6 +86,29 @@ fn child_tools_nest_inside_the_parent_even_when_child_arrives_first() {
 }
 
 #[test]
+fn claude_write_without_acp_diff_still_displays_written_source() {
+    let mut model = Model::default();
+    update(
+        &mut model,
+        json!({
+            "sessionUpdate":"tool_call", "toolCallId":"write", "title":"Write file",
+            "kind":"edit", "rawInput":{"file_path":"note.txt","content":"hello\n"},
+            "_meta":{"claudeCode":{"toolName":"Write"}}
+        }),
+    );
+    let document = wire(&model);
+    let tool = document["main"]["c"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["p"]["role"] == "omp.tool.write")
+        .unwrap();
+    assert_eq!(tool["p"]["target"], "note.txt");
+    assert_eq!(tool["c"][0]["p"]["role"], "omp.tool.write.source");
+    assert_eq!(tool["c"][0]["p"]["text"], "hello\n");
+}
+
+#[test]
 fn plan_permission_shows_markdown_above_decisions() {
     let mut model = Model::default();
     let request: RequestPermissionRequest = serde_json::from_value(json!({
@@ -188,8 +211,8 @@ fn quota_metadata_does_not_duplicate_the_context_meter() {
         "_meta":{"quota":{"token_count":{"totalTokens":501,"inputTokens":450},"model_usage":[]}}}),
     );
     assert_eq!(model.ext.quota_tokens, Some(501));
-    // Tern hides status segments that don't fit: one token meter, no invented quota limit.
+    // The composer meter reports context consumption; quota metadata is not a capacity.
     let dock = wire(&model)["dock"].to_string();
-    assert!(dock.contains("200 / 1000 tokens"));
+    assert!(dock.contains("Context: 200 of 1000 tokens"));
     assert_eq!(dock.matches("\"k\":\"meter\"").count(), 1);
 }
