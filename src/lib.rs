@@ -5,6 +5,7 @@
 //! They exchange [`event::BridgeEvent`] and [`event::UiCmd`] over [`bus`].
 
 pub mod acp;
+pub mod agents;
 pub mod bus;
 pub mod config;
 pub mod event;

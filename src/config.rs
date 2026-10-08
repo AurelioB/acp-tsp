@@ -171,6 +171,7 @@ impl Config {
 fn preset(name: &str) -> anyhow::Result<AgentLaunch> {
     let empty = BTreeMap::new();
     let (command, args) = match name {
+        "agy" => return crate::agents::resolve_agy(),
         "claude" => (
             "npx".to_owned(),
             vec![
@@ -182,21 +183,6 @@ fn preset(name: &str) -> anyhow::Result<AgentLaunch> {
             "npx".to_owned(),
             vec!["-y".into(), "@agentclientprotocol/codex-acp@2.1.1".into()],
         ),
-        "agy" => {
-            let mut path = data_home()?;
-            path.push("acp-tsp/agents/agy/agy_acp_server");
-            if cfg!(windows) {
-                path.set_extension("exe");
-            } else {
-                path.set_extension("par");
-            }
-            let args = if cfg!(target_os = "linux") {
-                vec!["--uid=".into()]
-            } else {
-                Vec::new()
-            };
-            (path.to_string_lossy().into_owned(), args)
-        }
         _ => bail!(
             "unknown agent {name:?}; known agents: agy, claude, codex (or add it under [agents.{name}])"
         ),
@@ -223,13 +209,6 @@ fn config_path() -> anyhow::Result<PathBuf> {
 
 fn home_config_dir() -> anyhow::Result<PathBuf> {
     Ok(home_dir()?.join(".config"))
-}
-
-fn data_home() -> anyhow::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(path.into());
-    }
-    Ok(home_dir()?.join(".local/share"))
 }
 
 fn home_dir() -> anyhow::Result<PathBuf> {

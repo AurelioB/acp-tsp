@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "agents": [
+    {
+      "id": "antigravity-acp",
+      "name": "Google Antigravity",
+      "version": "1.3.0",
+      "distribution": {
+        "binary": {
+          "linux-x86_64": {
+            "archive": "https://example.invalid/agy.zip",
+            "sha256": "9fb60956af0a9d76220a4db91ca9ac88e2a2372ad68f985ab5fceace6b825b96",
+            "cmd": "./agy_acp_server.par",
+            "args": ["--uid="],
+            "env": {}
+          }
+        }
+      }
+    }
+  ]
+}

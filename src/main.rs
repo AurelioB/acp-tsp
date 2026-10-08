@@ -52,8 +52,10 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Action {
     /// List built-in and configured agents.
-    Agents,
-    /// Configure Tern to launch acp-tsp in agent blocks.
+    Agents {
+        #[command(subcommand)]
+        command: Option<AgentCommand>,
+    },
     SetupTern {
         #[arg(long)]
         settings: Option<PathBuf>,
@@ -66,11 +68,52 @@ enum Action {
     /// Initialize an agent and print its ACP InitializeResponse.
     Probe,
 }
+#[derive(Debug, Subcommand)]
+enum AgentCommand {
+    /// Install Antigravity's registry ACP server.
+    Install {
+        name: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Configure Antigravity ACP authentication.
+    Auth {
+        name: String,
+        #[arg(long = "type")]
+        auth_type: String,
+    },
+    /// Compare pinned adapters with registry versions.
+    Update {
+        name: Option<String>,
+        #[arg(long)]
+        write: bool,
+    },
+    /// List installed registry agents.
+    List,
+}
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.action {
-        Some(Action::Agents) => list_agents(),
+        Some(Action::Agents { command }) => match command {
+            None | Some(AgentCommand::List) => list_agents(),
+            Some(AgentCommand::Install { name, version, yes }) => acp_tsp::agents::command(
+                "install",
+                Some(&name),
+                version.as_deref(),
+                yes,
+                false,
+                None,
+            ),
+            Some(AgentCommand::Auth { name, auth_type }) => {
+                acp_tsp::agents::command("auth", Some(&name), None, false, false, Some(&auth_type))
+            }
+            Some(AgentCommand::Update { name, write }) => {
+                acp_tsp::agents::command("update", name.as_deref(), None, false, write, None)
+            }
+        },
         Some(Action::SetupTern {
             settings,
             print,
@@ -262,26 +305,31 @@ fn probe(agent_name: Option<&str>) -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let agent = AcpAgent::new(
-            AcpAgentConfig::new(launch.command)
-                .args(launch.args)
-                .envs(launch.env),
-        );
-        agent_client_protocol::Client
-            .builder()
-            .on_receive_notification(
-                async |_notification: SessionNotification, _cx| Ok(()),
-                agent_client_protocol::on_receive_notification!(),
-            )
-            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
-                let request = InitializeRequest::new(ProtocolVersion::V1)
-                    .client_info(Implementation::new("acp-tsp", env!("CARGO_PKG_VERSION")))
-                    .client_capabilities(acp::capabilities());
-                let response = connection.send_request(request).block_task().await?;
-                println!("{}", serde_json::to_string_pretty(&response)?);
-                Ok(())
-            })
-            .await?;
+        tokio::time::timeout(Duration::from_secs(15), async move {
+            let agent = AcpAgent::new(
+                AcpAgentConfig::new(launch.command)
+                    .args(launch.args)
+                    .envs(launch.env),
+            );
+            agent_client_protocol::Client
+                .builder()
+                .on_receive_notification(
+                    async |_notification: SessionNotification, _cx| Ok(()),
+                    agent_client_protocol::on_receive_notification!(),
+                )
+                .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
+                    let request = InitializeRequest::new(ProtocolVersion::V1)
+                        .client_info(Implementation::new("acp-tsp", env!("CARGO_PKG_VERSION")))
+                        .client_capabilities(acp::capabilities());
+                    let response = connection.send_request(request).block_task().await?;
+                    println!("{}", serde_json::to_string_pretty(&response)?);
+                    Ok(())
+                })
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .context("agent probe timed out after 15 seconds")??;
         Ok::<(), anyhow::Error>(())
     })?;
     Ok(())
@@ -314,5 +362,10 @@ mod tests {
                 .unwrap()
                 .continue_session
         );
+    }
+    #[test]
+    fn agent_update_accepts_optional_agent_name() {
+        assert!(Cli::try_parse_from(["acp-tsp", "agents", "update", "agy", "--write"]).is_ok());
+        assert!(Cli::try_parse_from(["acp-tsp", "agents", "update", "--write"]).is_ok());
     }
 }
