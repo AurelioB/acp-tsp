@@ -6,7 +6,7 @@ Status:
 
 - Stage 1 (basics) done: prompts, streamed answers/thoughts, tool calls with diffs, plans, permission dialogs, cancel, agent auth, confined `fs/*`, restart.
 - Stage 2 (rest of ACP v1 + unstable features) done: `terminal/*`, session list/load/resume/close/delete/fork, `additionalDirectories`, modes and config options, slash commands, file mentions with embedded context/images/audio, MCP servers, form/URL elicitation, terminal auth, logout, usage, `$/cancel_request`, providers, plan operations, notices, compaction, subagents, end-turn usage, MCP-over-ACP (`tern_open` tool). Not implemented: NES (`nes/*`, `document/*`) and draft protocol v2 — see [docs/PLAN.md](docs/PLAN.md) §10 D2.
-- Stage 3 (agent-specific extensions) in progress.
+- Stage 3 (agent-specific extensions) done: `_meta.terminal_*` command output streaming, `_auth/status_update` account chip, steering (`_session/steering`, Claude), Claude tool names / nested subagent tools / ExitPlanMode plan approval / rate-limit banner, Codex plan review / API-key env auth / error meta, adapter `session_meta`, agy registry install + auth helper, redacted ACP recording (`ACP_TSP_RECORD`) and replay tests from real Claude/Codex sessions. AIR-only adapter features (goal, async tasks) are not offered because acp-tsp does not identify as JetBrains AIR.
 
 ## Requirements and installation
 
@@ -62,9 +62,10 @@ stream command output in tool-call `_meta.terminal_output` updates (with
 `InitializeResponse._meta.steering.supported`: while a turn runs the client
 sends `_session/steering` with `{sessionId, prompt, _meta:
 {steering: {idleBehavior: "promptRequired"}}}`. Claude returns
-`promptRequired` when the turn just ended; Codex 2.1.1 accepts the params but
-does not yet honor `idleBehavior`. Without a running turn the client uses
-ordinary queued `session/prompt`.
+`promptRequired` when the turn just ended. Codex 2.1.1 advertises steering but ignores
+`idleBehavior`, so a steer racing the end of a turn would start a detached turn: acp-tsp
+queues instead of steering for Codex. Without a running turn the client uses ordinary queued
+`session/prompt`.
 
 MCP servers may be configured globally or per agent; per-agent entries are appended to the
 global list. HTTP and SSE transports require matching agent capabilities; unsupported servers
