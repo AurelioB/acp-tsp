@@ -22,6 +22,11 @@ fn wire(model: &Model) -> Value {
                 if let Some(age) = node.pointer_mut("/p/age") {
                     *age = json!(0);
                 }
+                if node.pointer("/p/role").and_then(Value::as_str) == Some("omp.user.time") {
+                    node["p"]["text"] = json!("<time>");
+                    node["p"]["spans"] = json!([{"t":"<time>","s":"dim mono"}]);
+                    node["p"]["title"] = json!("<timestamp>");
+                }
                 if let Some(children) = node.get_mut("c").and_then(Value::as_array_mut) {
                     for child in children {
                         normalize(child);
@@ -132,8 +137,17 @@ fn prior_turn_thoughts_stay_collapsed_while_new_turn_streams() {
     ))));
     model.submitted("second".into());
     let document = wire(&model);
-    assert_eq!(document["main"]["c"][1]["p"]["collapsed"], true);
-    assert_eq!(document["main"]["c"][2]["p"]["stream"], false);
+    let entries = document["main"]["c"].as_array().unwrap();
+    let thought = entries
+        .iter()
+        .find(|entry| entry["p"]["role"] == "omp.thinking")
+        .unwrap();
+    let assistant = entries
+        .iter()
+        .find(|entry| entry["p"]["role"] == "omp.assistant")
+        .unwrap();
+    assert_eq!(thought["p"]["collapsed"], true);
+    assert_eq!(assistant["c"][0]["p"]["stream"], false);
 }
 
 #[test]
@@ -179,4 +193,93 @@ fn auth_picker_is_a_child_of_the_layer_region() {
     let layer = &wire(&model)["layer"];
     assert_eq!(layer["k"], "col");
     assert_eq!(layer["c"][0]["k"], "picker");
+}
+
+#[test]
+fn shell_and_read_use_their_omp_tool_frames() {
+    let mut model = Model::default();
+    model.submitted("Inspect".into());
+    update(
+        &mut model,
+        SessionUpdate::ToolCall(
+            ToolCall::new("read", "Read hello.txt")
+                .kind(ToolKind::Read)
+                .raw_input(json!({"file_path":"hello.txt"}))
+                .status(agent_client_protocol::schema::v1::ToolCallStatus::Completed),
+        ),
+    );
+    update(
+        &mut model,
+        SessionUpdate::ToolCall(
+            ToolCall::new("bash", "Run ls")
+                .kind(ToolKind::Execute)
+                .raw_input(json!({"command":"ls"}))
+                .content(vec![ToolCallContent::from(ContentBlock::Text(
+                    TextContent::new("hello.txt\n"),
+                ))])
+                .status(agent_client_protocol::schema::v1::ToolCallStatus::Completed),
+        ),
+    );
+    let doc = wire(&model);
+    let entries = doc["main"]["c"].as_array().unwrap();
+    let read = entries
+        .iter()
+        .find(|node| node["p"]["role"] == "omp.tool.read")
+        .unwrap();
+    assert_eq!(read["p"]["targetKind"], "path");
+    assert_eq!(read["p"]["frame"], "inline");
+    assert_eq!(read["p"]["status"], "done");
+    let bash = entries
+        .iter()
+        .find(|node| node["p"]["role"] == "omp.tool.bash")
+        .unwrap();
+    assert_eq!(bash["p"]["target"], "ls");
+    assert_eq!(bash["p"]["targetKind"], "command");
+    assert_eq!(bash["p"]["frame"], "card");
+    assert_eq!(bash["p"]["preview"]["tail"], 10);
+    assert_eq!(bash["c"][0]["p"]["role"], "omp.tool.bash.output");
+}
+
+#[cfg(feature = "unstable_end_turn_token_usage")]
+#[test]
+fn completed_turn_usage_is_part_of_the_last_assistant_message() {
+    use agent_client_protocol::schema::v1::{Cost, PromptResponse, StopReason, Usage, UsageUpdate};
+    let mut model = Model::default();
+    update(
+        &mut model,
+        SessionUpdate::UsageUpdate(UsageUpdate::new(100, 1000).cost(Cost::new(1.0, "USD"))),
+    );
+    model.submitted("Hi".into());
+    update(
+        &mut model,
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            "Hello.",
+        )))),
+    );
+    update(
+        &mut model,
+        SessionUpdate::UsageUpdate(UsageUpdate::new(120, 1000).cost(Cost::new(1.02, "USD"))),
+    );
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(
+        PromptResponse::new(StopReason::EndTurn).usage(Usage::new(24, 19, 5)),
+    ))));
+    let doc = wire(&model);
+    let entries = doc["main"]["c"].as_array().unwrap();
+    let assistant = entries
+        .iter()
+        .find(|node| node["p"]["role"] == "omp.assistant")
+        .unwrap();
+    let footer = assistant["c"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["p"]["role"] == "omp.turn.usage")
+        .unwrap();
+    assert!(
+        footer["c"][1]["p"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("24 tok · $0.02 this turn")
+    );
+    assert!(!doc["main"].to_string().contains("Tokens:"));
 }

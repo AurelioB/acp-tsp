@@ -10,14 +10,135 @@ expression: "wire(&model)[\"main\"]"
   },
   "c": [
     {
+      "id": "main.welcome.before",
+      "k": "spacer",
+      "p": {
+        "key": "welcome.before",
+        "size": "sm"
+      }
+    },
+    {
+      "id": "main.welcome",
+      "k": "card",
+      "p": {
+        "key": "welcome",
+        "role": "omp.welcome"
+      },
+      "c": [
+        {
+          "id": "main.welcome.lockup",
+          "k": "row",
+          "p": {
+            "key": "lockup",
+            "role": "omp.welcome.lockup",
+            "align": "center",
+            "gap": "md"
+          },
+          "c": [
+            {
+              "id": "main.welcome.lockup.glyph",
+              "k": "text",
+              "p": {
+                "text": "✦",
+                "key": "glyph",
+                "role": "omp.welcome.logo",
+                "tone": "accent",
+                "title": "Agent"
+              }
+            },
+            {
+              "id": "main.welcome.lockup.mark",
+              "k": "col",
+              "p": {
+                "key": "mark",
+                "role": "omp.welcome.mark"
+              },
+              "c": [
+                {
+                  "id": "main.welcome.lockup.mark.wordmark",
+                  "k": "text",
+                  "p": {
+                    "spans": [
+                      {
+                        "t": "Agent",
+                        "s": "strong"
+                      }
+                    ],
+                    "key": "wordmark",
+                    "role": "omp.welcome.wordmark"
+                  }
+                },
+                {
+                  "id": "main.welcome.lockup.mark.version",
+                  "k": "text",
+                  "p": {
+                    "spans": [
+                      {
+                        "t": "Connecting…",
+                        "s": "dim mono"
+                      }
+                    ],
+                    "key": "version",
+                    "role": "omp.welcome.version"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "main.welcome.tip",
+          "k": "row",
+          "p": {
+            "key": "tip",
+            "role": "omp.welcome.tip",
+            "gap": "sm",
+            "align": "start"
+          },
+          "c": [
+            {
+              "id": "main.welcome.tip.icon",
+              "k": "icon",
+              "p": {
+                "name": "folder",
+                "key": "icon",
+                "role": "omp.welcome.tip-icon"
+              }
+            },
+            {
+              "id": "main.welcome.tip.text",
+              "k": "text",
+              "p": {
+                "text": "Starting session…  ·  / commands  ·  @ files",
+                "key": "text",
+                "role": "omp.welcome.tip-text"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "main.welcome.after",
+      "k": "spacer",
+      "p": {
+        "key": "welcome.after",
+        "size": "sm"
+      }
+    },
+    {
       "id": "main.entry.2",
       "k": "tool",
       "p": {
-        "name": "think",
+        "name": "task",
         "key": "entry.2",
-        "title": "Investigating",
+        "role": "omp.tool.task",
+        "title": "Task",
         "status": "pending",
-        "collapsible": true
+        "frame": "inline",
+        "collapsible": false,
+        "collapsed": false,
+        "age": 0
       },
       "c": [
         {
@@ -36,9 +157,13 @@ expression: "wire(&model)[\"main\"]"
               "p": {
                 "name": "read",
                 "key": "child.1",
-                "title": "Read child file",
+                "role": "omp.tool.read",
+                "title": "Read",
                 "status": "pending",
-                "collapsible": true
+                "frame": "inline",
+                "collapsible": false,
+                "collapsed": false,
+                "age": 0
               }
             }
           ]
