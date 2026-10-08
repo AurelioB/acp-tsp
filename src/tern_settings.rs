@@ -88,6 +88,9 @@ pub fn update_settings(
     if changes.is_empty() {
         return Ok(changes);
     }
+    // A symlinked settings.json (dotfile managers) must stay a symlink: replace its target.
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = resolved.as_path();
     let bytes = serde_json::to_vec_pretty(&settings)?;
     let parent = path
         .parent()
@@ -198,6 +201,23 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("settings.json.bak-")
         }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_settings_stay_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("dotfiles-settings.json");
+        std::fs::write(&target, r#"{"theme":"dark"}"#).unwrap();
+        let link = dir.path().join("settings.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        update_settings(&link, Path::new("/opt/acp-tsp"), None, false).unwrap();
+
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        let written: Value = serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
+        assert_eq!(written["agent_command"], "/opt/acp-tsp");
+        assert_eq!(written["theme"], "dark");
     }
 
     #[test]
