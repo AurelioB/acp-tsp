@@ -7,45 +7,128 @@ expression: layer
   "k": "col",
   "c": [
     {
-      "id": "layer.permission",
+      "id": "layer.permission.sheet",
       "k": "overlay",
       "p": {
-        "modal": true,
-        "key": "permission",
-        "head": "Approve Plan"
+        "key": "permission.sheet",
+        "anchor": "bottom",
+        "size": "lg",
+        "modal": true
       },
       "c": [
         {
-          "id": "layer.permission.plan",
-          "k": "md",
+          "id": "layer.permission.sheet.permission",
+          "k": "col",
           "p": {
-            "text": "# Keep tests green\n\nDo the thing.",
-            "key": "plan"
-          }
-        },
-        {
-          "id": "layer.permission.option.0",
-          "k": "el",
-          "p": {
-            "tag": "button",
-            "text": "1. Implement",
-            "key": "option.0",
-            "actions": {
-              "click": "click"
+            "role": "omp.editor",
+            "key": "permission"
+          },
+          "c": [
+            {
+              "id": "layer.permission.sheet.permission.title",
+              "k": "text",
+              "p": {
+                "text": "Plan review",
+                "key": "title",
+                "role": "omp.ask.question"
+              }
+            },
+            {
+              "id": "layer.permission.sheet.permission.plan",
+              "k": "md",
+              "p": {
+                "text": "# Keep tests green\n\nDo the thing.",
+                "key": "plan"
+              }
+            },
+            {
+              "id": "layer.permission.sheet.permission.options",
+              "k": "list",
+              "p": {
+                "key": "options",
+                "role": "omp.ask.options",
+                "selected": "layer.permission.sheet.permission.options.option.0"
+              },
+              "c": [
+                {
+                  "id": "layer.permission.sheet.permission.options.option.0",
+                  "k": "item",
+                  "p": {
+                    "label": "Implement",
+                    "key": "option.0",
+                    "role": "omp.ask.option",
+                    "hint": [
+                      "1"
+                    ],
+                    "actions": {
+                      "click": "click"
+                    }
+                  }
+                },
+                {
+                  "id": "layer.permission.sheet.permission.options.option.1",
+                  "k": "item",
+                  "p": {
+                    "label": "Revise",
+                    "key": "option.1",
+                    "role": "omp.ask.option",
+                    "hint": [
+                      "2"
+                    ],
+                    "actions": {
+                      "click": "click"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "id": "layer.permission.sheet.permission.actions",
+              "k": "row",
+              "p": {
+                "key": "actions",
+                "role": "omp.actions"
+              },
+              "c": [
+                {
+                  "id": "layer.permission.sheet.permission.actions.0",
+                  "k": "spacer",
+                  "p": {
+                    "grow": 1
+                  }
+                },
+                {
+                  "id": "layer.permission.sheet.permission.actions.cancel",
+                  "k": "row",
+                  "p": {
+                    "key": "cancel",
+                    "role": "omp.btn",
+                    "actions": {
+                      "click": "click"
+                    }
+                  },
+                  "c": [
+                    {
+                      "id": "layer.permission.sheet.permission.actions.cancel.0",
+                      "k": "text",
+                      "p": {
+                        "text": "Cancel"
+                      }
+                    },
+                    {
+                      "id": "layer.permission.sheet.permission.actions.cancel.1",
+                      "k": "kbd",
+                      "p": {
+                        "keys": [
+                          "escape"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
             }
-          }
-        },
-        {
-          "id": "layer.permission.option.1",
-          "k": "el",
-          "p": {
-            "tag": "button",
-            "text": "2. Revise",
-            "key": "option.1",
-            "actions": {
-              "click": "click"
-            }
-          }
+          ]
         }
       ]
     }

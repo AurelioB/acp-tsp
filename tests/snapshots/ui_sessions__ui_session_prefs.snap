@@ -8,6 +8,7 @@ expression: "layer(View::new().layer(prefs::render(&model)))"
   "p": {
     "key": "config",
     "title": "Session configuration",
+    "lead": "Model, thinking effort and agent behavior for this session",
     "sections": [
       {
         "id": "options",

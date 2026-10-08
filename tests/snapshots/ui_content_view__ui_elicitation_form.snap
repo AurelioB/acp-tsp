@@ -10,10 +10,11 @@ expression: "wire(&model)[\"layer\"]"
       "id": "layer.elicitation",
       "k": "overlay",
       "p": {
-        "modal": true,
+        "anchor": "bottom",
         "size": "lg",
         "key": "elicitation",
-        "head": "Agent request"
+        "role": "omp.editor",
+        "head": "Agent question"
       },
       "c": [
         {
@@ -21,7 +22,8 @@ expression: "wire(&model)[\"layer\"]"
           "k": "md",
           "p": {
             "text": "What should I use?",
-            "key": "message"
+            "key": "message",
+            "role": "omp.ask.question"
           }
         },
         {
@@ -93,40 +95,104 @@ expression: "wire(&model)[\"layer\"]"
           ]
         },
         {
-          "id": "layer.elicitation.accept",
-          "k": "el",
+          "id": "layer.elicitation.actions",
+          "k": "row",
           "p": {
-            "tag": "button",
-            "text": "Accept",
-            "key": "accept",
-            "actions": {
-              "click": "click"
+            "key": "actions",
+            "role": "omp.actions",
+            "gap": "sm"
+          },
+          "c": [
+            {
+              "id": "layer.elicitation.actions.0",
+              "k": "spacer",
+              "p": {
+                "grow": 1
+              }
+            },
+            {
+              "id": "layer.elicitation.actions.decline",
+              "k": "row",
+              "p": {
+                "key": "decline",
+                "role": "omp.btn",
+                "gap": "xs",
+                "actions": {
+                  "click": "click"
+                }
+              },
+              "c": [
+                {
+                  "id": "layer.elicitation.actions.decline.0",
+                  "k": "text",
+                  "p": {
+                    "text": "Decline"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "layer.elicitation.actions.cancel",
+              "k": "row",
+              "p": {
+                "key": "cancel",
+                "role": "omp.btn",
+                "gap": "xs",
+                "actions": {
+                  "click": "click"
+                }
+              },
+              "c": [
+                {
+                  "id": "layer.elicitation.actions.cancel.0",
+                  "k": "text",
+                  "p": {
+                    "text": "Cancel"
+                  }
+                },
+                {
+                  "id": "layer.elicitation.actions.cancel.1",
+                  "k": "kbd",
+                  "p": {
+                    "keys": [
+                      "escape"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "id": "layer.elicitation.actions.accept",
+              "k": "row",
+              "p": {
+                "key": "accept",
+                "role": "omp.btn",
+                "gap": "xs",
+                "tone": "accent",
+                "actions": {
+                  "click": "click"
+                }
+              },
+              "c": [
+                {
+                  "id": "layer.elicitation.actions.accept.0",
+                  "k": "text",
+                  "p": {
+                    "text": "Accept"
+                  }
+                },
+                {
+                  "id": "layer.elicitation.actions.accept.1",
+                  "k": "kbd",
+                  "p": {
+                    "keys": [
+                      "enter"
+                    ]
+                  }
+                }
+              ]
             }
-          }
-        },
-        {
-          "id": "layer.elicitation.decline",
-          "k": "el",
-          "p": {
-            "tag": "button",
-            "text": "Decline",
-            "key": "decline",
-            "actions": {
-              "click": "click"
-            }
-          }
-        },
-        {
-          "id": "layer.elicitation.cancel",
-          "k": "el",
-          "p": {
-            "tag": "button",
-            "text": "Cancel",
-            "key": "cancel",
-            "actions": {
-              "click": "click"
-            }
-          }
+          ]
         }
       ]
     }

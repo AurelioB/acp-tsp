@@ -58,37 +58,120 @@ expression: wire(&model)
     "k": "col",
     "c": [
       {
-        "id": "layer.permission",
+        "id": "layer.permission.sheet",
         "k": "overlay",
         "p": {
-          "modal": true,
-          "key": "permission",
-          "head": "Run tests"
+          "key": "permission.sheet",
+          "anchor": "bottom",
+          "size": "lg",
+          "modal": true
         },
         "c": [
           {
-            "id": "layer.permission.option.0",
-            "k": "el",
+            "id": "layer.permission.sheet.permission",
+            "k": "col",
             "p": {
-              "tag": "button",
-              "text": "1. Allow once",
-              "key": "option.0",
-              "actions": {
-                "click": "click"
+              "role": "omp.editor",
+              "key": "permission"
+            },
+            "c": [
+              {
+                "id": "layer.permission.sheet.permission.title",
+                "k": "text",
+                "p": {
+                  "text": "Run tests",
+                  "key": "title",
+                  "role": "omp.ask.question"
+                }
+              },
+              {
+                "id": "layer.permission.sheet.permission.options",
+                "k": "list",
+                "p": {
+                  "key": "options",
+                  "role": "omp.ask.options",
+                  "selected": "layer.permission.sheet.permission.options.option.0"
+                },
+                "c": [
+                  {
+                    "id": "layer.permission.sheet.permission.options.option.0",
+                    "k": "item",
+                    "p": {
+                      "label": "Allow once",
+                      "key": "option.0",
+                      "role": "omp.ask.option",
+                      "hint": [
+                        "1"
+                      ],
+                      "actions": {
+                        "click": "click"
+                      }
+                    }
+                  },
+                  {
+                    "id": "layer.permission.sheet.permission.options.option.1",
+                    "k": "item",
+                    "p": {
+                      "label": "Reject once",
+                      "key": "option.1",
+                      "role": "omp.ask.option",
+                      "hint": [
+                        "2"
+                      ],
+                      "actions": {
+                        "click": "click"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "layer.permission.sheet.permission.actions",
+                "k": "row",
+                "p": {
+                  "key": "actions",
+                  "role": "omp.actions"
+                },
+                "c": [
+                  {
+                    "id": "layer.permission.sheet.permission.actions.0",
+                    "k": "spacer",
+                    "p": {
+                      "grow": 1
+                    }
+                  },
+                  {
+                    "id": "layer.permission.sheet.permission.actions.cancel",
+                    "k": "row",
+                    "p": {
+                      "key": "cancel",
+                      "role": "omp.btn",
+                      "actions": {
+                        "click": "click"
+                      }
+                    },
+                    "c": [
+                      {
+                        "id": "layer.permission.sheet.permission.actions.cancel.0",
+                        "k": "text",
+                        "p": {
+                          "text": "Cancel"
+                        }
+                      },
+                      {
+                        "id": "layer.permission.sheet.permission.actions.cancel.1",
+                        "k": "kbd",
+                        "p": {
+                          "keys": [
+                            "escape"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
               }
-            }
-          },
-          {
-            "id": "layer.permission.option.1",
-            "k": "el",
-            "p": {
-              "tag": "button",
-              "text": "2. Reject once",
-              "key": "option.1",
-              "actions": {
-                "click": "click"
-              }
-            }
+            ]
           }
         ]
       }

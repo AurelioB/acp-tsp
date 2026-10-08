@@ -82,6 +82,40 @@ fn validation_rejects_required_invalid_bounds_and_numeric_types() {
 }
 
 #[test]
+fn choice_form_arrows_select_and_submit_the_agent_value() {
+    let request = CreateElicitationRequest::new(
+        ElicitationFormMode::new(
+            ElicitationSessionScope::new("s"),
+            ElicitationSchema::new().property(
+                "drink",
+                StringPropertySchema::new().enum_values(vec!["Tea".into(), "Coffee".into()]),
+                true,
+            ),
+        ),
+        "Do you prefer tea or coffee?",
+    );
+    let agent_client_protocol::schema::v1::ElicitationMode::Form(form) = &request.mode else {
+        panic!("form")
+    };
+    let mut state = FormState::default();
+    state.init(9, &request);
+    assert!(state.option_key(&form.requested_schema, &tern_sdk::keys::Key::named("down")));
+    assert_eq!(state.values["drink"], Value::String("Coffee".into()));
+    let Some(acp_tsp::event::UiCmd::Elicitation { response, .. }) = state.accept(9, &request)
+    else {
+        panic!("accepted")
+    };
+    let agent_client_protocol::schema::v1::ElicitationAction::Accept(accepted) = response.action
+    else {
+        panic!("accept")
+    };
+    assert_eq!(
+        accepted.content.unwrap()["drink"],
+        Value::String("Coffee".into())
+    );
+}
+
+#[test]
 fn elicitation_permission_fifo_and_url_completion_resolve_by_id() {
     let mut model = Model::default();
     let url = CreateElicitationRequest::new(

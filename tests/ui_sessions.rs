@@ -7,6 +7,8 @@ use acp_tsp::{
     model::Model,
     ui::{
         UiOptions,
+        attach::AttachPicker,
+        composer::Composer,
         palette::{Kind, Palette},
         prefs, run_with_terminal,
     },
@@ -121,11 +123,11 @@ fn drive(script: &[u8], event: Option<BridgeEvent>) -> (String, Vec<UiCmd>) {
 }
 
 #[test]
-fn slash_opens_picker_then_enter_sends_client_new_session() {
+fn slash_opens_caret_autocomplete_then_enter_sends_client_new_session() {
     let (output, cmds) = drive(b"/\r\x04", None);
     assert!(
-        output.contains("\"k\":\"picker\""),
-        "slash must show a native picker"
+        output.contains("\"role\":\"omp.autocomplete\""),
+        "slash must show a caret-anchored autocomplete"
     );
     assert!(cmds.iter().any(|cmd| matches!(cmd, UiCmd::NewSession)));
     assert!(matches!(cmds.last(), Some(UiCmd::Shutdown)));
@@ -186,6 +188,75 @@ fn picker_snapshot() {
         "ui_session_palette",
         layer(View::new().layer(Palette::new(Kind::Commands).render(&model)))
     );
+}
+
+#[test]
+fn model_and_effort_pickers_send_config_option_selection() {
+    use agent_client_protocol::schema::v1::SessionConfigSelectOption;
+    let mut model = Model::default();
+    model.apply(BridgeEvent::SessionStarted {
+        session_id: "s".into(),
+        kind: SessionStartKind::New,
+        cwd: "/tmp/project".into(),
+        additional_dirs: vec![],
+        modes: None,
+        config_options: Some(vec![
+            SessionConfigOption::select(
+                "model",
+                "Model",
+                "fast",
+                vec![
+                    SessionConfigSelectOption::new("fast", "Fast"),
+                    SessionConfigSelectOption::new("smart", "Smart"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Model),
+            SessionConfigOption::select(
+                "thought",
+                "Thinking",
+                "low",
+                vec![
+                    SessionConfigSelectOption::new("low", "Low"),
+                    SessionConfigSelectOption::new("high", "High"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::ThoughtLevel),
+        ]),
+    });
+    for (kind, id, value) in [
+        (Kind::Model, "model", "smart"),
+        (Kind::Effort, "thought", "high"),
+    ] {
+        let mut picker = Palette::new(kind);
+        let choice = picker.select(&format!("config:{id}:{value}"), &model, true);
+        assert!(
+            matches!(choice, acp_tsp::ui::palette::Choice::Command(UiCmd::SetConfigOption { config_id, value: selected })
+                if config_id.0.as_ref() == id
+                    && selected.as_value_id().is_some_and(|selected| selected.0.as_ref() == value)),
+            "model and effort choices must be sent to the agent"
+        );
+    }
+}
+
+#[test]
+fn mention_autocomplete_descends_directories_before_accepting_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("docs")).unwrap();
+    std::fs::write(dir.path().join("docs/guide.md"), "guide").unwrap();
+    std::fs::write(dir.path().join("README.md"), "readme").unwrap();
+    let mut picker = AttachPicker::default();
+    let mut composer = Composer::default();
+    composer.insert("Read @");
+    picker.open(dir.path());
+    picker.sync(&composer.text, composer.cursor);
+    assert_eq!(picker.matches()[0].0.to_string_lossy(), "docs");
+    assert!(picker.matches()[0].1);
+    picker.accept_selected(&mut composer);
+    assert_eq!(composer.text, "Read @docs/");
+    assert_eq!(picker.matches().len(), 1);
+    picker.accept_selected(&mut composer);
+    assert_eq!(composer.text, "Read @docs/guide.md ");
+    assert!(!picker.open);
 }
 
 #[test]
