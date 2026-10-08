@@ -290,11 +290,19 @@ fn run_with_controller(
                     }
                 }
                 Msg::Edit(edit) if !composer_blocked => {
+                    let was_empty = composer.text.is_empty();
                     if composer.edit(&edit) {
                         focused_terminal = None;
-                        if composer.text == "/" {
+                        // Tern may batch fast typing into one edit: `/con` typed into an empty
+                        // composer opens the palette already filtered by `con`.
+                        if was_empty
+                            && composer.text.starts_with('/')
+                            && !composer.text.contains(char::is_whitespace)
+                        {
+                            let mut commands = Palette::new(Kind::Commands);
+                            commands.query = composer.text[1..].to_owned();
                             composer = Composer::default();
-                            palette = Some(Palette::new(Kind::Commands));
+                            palette = Some(commands);
                         } else if edit.text.contains('@')
                             && let Some(current) = &model.session
                         {

@@ -239,3 +239,19 @@ fn palette_ranks_command_names_above_description_matches() {
         "Enter must pick /new, got {cmds:?}"
     );
 }
+
+#[test]
+fn batched_slash_edit_opens_the_filtered_palette() {
+    // Tern can deliver fast typing as one native edit; `/new` must still reach the palette.
+    let edit = r#"{"ev":"edit","sf":"s1","id":"dock.ed","from":0,"to":0,"text":"/new","cursor":4,"len":0}"#;
+    let script = format!("\x1b_tsp;e;{edit}\x1b\\\r\x1b[27u\x04");
+    let (_, cmds) = drive(script.as_bytes(), None);
+    assert!(
+        cmds.iter().any(|cmd| matches!(cmd, UiCmd::NewSession)),
+        "got {cmds:?}"
+    );
+    assert!(
+        !cmds.iter().any(|cmd| matches!(cmd, UiCmd::Prompt(_))),
+        "the slash command must not be sent as a prompt"
+    );
+}
