@@ -43,3 +43,17 @@ We do not reuse omp branding: no `image builtin:"omp"` logo and no omp tips. The
 ## Acceptance
 
 Side-by-side headless screenshots of the same scenarios (welcome, working, finished turn with read + bash tools, `/`, `@`, model picker, permission dialog, question form) are visually close to omp's. Interactions keep working. Stable node ids; settled finished entries.
+
+## ACP rendering decisions
+
+- The welcome mark is a neutral glyph, not the omp image; its title and version
+  come from ACP `initialize` (the launch name is shown until it arrives).
+- ACP tool kinds select omp-style cards: reads stay inline, shell commands have
+  collapsible ANSI output and a tail preview, edits use TSP `diff`, and child
+  calls nest under their parent. File paths resolve against the session cwd.
+- A turn footer shows elapsed time and per-turn token/cost deltas when available.
+  Context-window usage remains a **session** meter, never a token quota.
+- The dock replaces the generic status strip with `omp.editor` and
+  `omp.hud.activity` while working. Clipboard actions are omitted because
+  tern-sdk has no clipboard action; a Copy button must not claim to work when
+  no clipboard integration exists.

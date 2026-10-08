@@ -1,10 +1,14 @@
 //! Adapter-specific tool metadata and controls. Account details never enter the default dock.
 use agent_client_protocol::schema::v1::{ToolCall, ToolCallContent, ToolCallStatus, ToolKind};
-use tern_sdk::ui::{self, Control, Hunk, Node, PrefsRow, PrefsSection, Status, html};
+use tern_sdk::ui::{
+    self, Control, Hunk, Node, PrefsRow, PrefsSection, Status, TargetKind, ToolFrame, ToolPreview,
+    html,
+};
 
 use super::Msg;
 use crate::model::{EntryKind, Model};
 
+/// Tern's built-in tool cards are keyed by the `omp.tool.*` role and their head props.
 pub fn tool(
     call: &ToolCall,
     cancelled: bool,
@@ -15,25 +19,28 @@ pub fn tool(
     let meta = model.ext.tools.get(&call.tool_call_id);
     let claude_name = meta.and_then(|m| m.tool_name.as_deref());
     let name = match claude_name {
-        Some("Bash" | "PowerShell") => "execute",
+        Some("Bash" | "PowerShell") => "bash",
         Some("Read") => "read",
-        Some("Edit" | "Write" | "NotebookEdit") => "edit",
-        Some("Glob" | "Grep") => "search",
-        Some("WebFetch" | "WebSearch") => "fetch",
-        Some("Task" | "Agent") => "think",
-        Some("ExitPlanMode") => "switch_mode",
-        Some("TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet") => "think",
+        Some("Edit" | "NotebookEdit") => "edit",
+        Some("Write") => "write",
+        Some("Glob") => "glob",
+        Some("Grep") => "grep",
+        Some("WebFetch") => "fetch",
+        Some("WebSearch") => "web",
+        Some("Task" | "Agent") => "task",
+        Some("TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet") => "task",
+        _ if meta.is_some_and(|m| m.mcp) => "mcp",
         _ => match call.kind {
             ToolKind::Read => "read",
             ToolKind::Edit => "edit",
             ToolKind::Delete => "delete",
             ToolKind::Move => "move",
-            ToolKind::Search => "search",
-            ToolKind::Execute => "execute",
-            ToolKind::Think => "think",
+            ToolKind::Search => "find",
+            ToolKind::Execute => "bash",
+            ToolKind::Think => "task",
             ToolKind::Fetch => "fetch",
             ToolKind::SwitchMode => "switch_mode",
-            _ => call.name.as_deref().unwrap_or("other"),
+            _ => "generic",
         },
     };
     let status = if cancelled {
@@ -47,24 +54,134 @@ pub fn tool(
             _ => Status::Pending,
         }
     };
+    let finished = matches!(status, Status::Done | Status::Error | Status::Cancelled);
+    let raw = call.raw_input.as_ref();
+    let arg = |names: &[&str]| {
+        names.iter().find_map(|name| {
+            raw.and_then(|v| v.get(name))
+                .and_then(serde_json::Value::as_str)
+        })
+    };
+    let path = call
+        .locations
+        .first()
+        .map(|location| location.path.display().to_string())
+        .or_else(|| arg(&["file_path", "path", "filePath"]).map(str::to_owned));
+    let target = match name {
+        "bash" => arg(&["command", "cmd"])
+            .map(str::to_owned)
+            .or_else(|| Some(call.title.clone())),
+        "read" | "edit" | "write" | "delete" | "move" => path.as_deref().map(|path| {
+            let file = std::path::Path::new(path);
+            model
+                .session
+                .as_ref()
+                .and_then(|session| file.strip_prefix(&session.cwd).ok())
+                .unwrap_or(file)
+                .display()
+                .to_string()
+        }),
+        "glob" | "grep" => arg(&["pattern", "glob", "query"]).map(str::to_owned),
+        "find" | "web" | "fetch" => arg(&["query", "url", "pattern"]).map(str::to_owned),
+        _ => None,
+    };
+    let title = match name {
+        "bash" => "Bash",
+        "read" => "Read",
+        "edit" => "Edit",
+        "write" => "Write",
+        "glob" => "Glob",
+        "grep" => "Grep",
+        "find" => "Find",
+        "fetch" => "Fetch",
+        "web" => "Web",
+        "task" => "Task",
+        _ => &call.title,
+    };
     let mut node = ui::tool(name)
         .key(key)
-        .title(call.title.clone())
+        .role(format!("omp.tool.{name}"))
+        .title(title.to_owned())
         .status(status)
-        .collapsible(true);
-    if let Some(location) = call.locations.first() {
-        node = node.target(location.path.display().to_string());
+        .frame(if name == "bash" {
+            ToolFrame::Card
+        } else {
+            ToolFrame::Inline
+        })
+        .collapsible(name == "bash" && finished)
+        .collapsed(name == "bash" && finished);
+    if let Some(target) = target {
+        let target_kind = match name {
+            "bash" => TargetKind::Command,
+            "read" | "edit" | "write" | "delete" | "move" => TargetKind::Path,
+            "glob" | "grep" => TargetKind::Pattern,
+            "find" | "web" | "fetch" => TargetKind::Query,
+            _ => TargetKind::Text,
+        };
+        node = node.target(target).target_kind(target_kind);
+    }
+    if let Some(path) = path
+        .as_deref()
+        .filter(|_| matches!(name, "read" | "edit" | "write" | "delete" | "move"))
+    {
+        let full = if std::path::Path::new(path).is_absolute() {
+            std::path::PathBuf::from(path)
+        } else {
+            model.session.as_ref().map_or_else(
+                || std::path::PathBuf::from(path),
+                |session| session.cwd.join(path),
+            )
+        };
+        node = node.prop("href", format!("file://{}", full.display()));
+    }
+    if name == "bash" {
+        node = node.prop("lang", "bash");
+        if finished {
+            node = node.preview(ToolPreview::Tail(10));
+        }
+    }
+    if let Some(entry) = model.transcript.iter().find(|entry| matches!(&entry.kind, EntryKind::Tool { call: old, .. } if old.tool_call_id == call.tool_call_id)) {
+        let duration = entry.finished_at.unwrap_or_else(std::time::SystemTime::now).duration_since(entry.at).unwrap_or_default().as_millis();
+        let ms = u64::try_from(duration).unwrap_or(u64::MAX);
+        node = if finished { node.took(ms) } else { node.age(i64::try_from(ms).unwrap_or(i64::MAX)) };
     }
     if let Some(meta) = meta {
+        let mut badges = Vec::new();
         if meta.mcp {
-            node = node.child(ui::badge("MCP").key("mcp"));
+            badges.push(ui::BadgeSpec {
+                text: "MCP".into(),
+                ..Default::default()
+            });
         }
-        if let Some(cwd) = &meta.cwd {
-            node = node.child(ui::text(cwd.clone()).key("cwd"));
+        if let Some(code) = meta.exit_code {
+            if code != 0 {
+                node = node.exit(i64::from(code));
+                badges.push(ui::BadgeSpec {
+                    text: format!("Exit {code}"),
+                    ..Default::default()
+                });
+            }
+        } else if let Some(signal) = &meta.signal {
+            badges.push(ui::BadgeSpec {
+                text: format!("Signal {signal}"),
+                ..Default::default()
+            });
+        }
+        if !badges.is_empty() {
+            node = node.badges(badges);
         }
     }
     for (i, content) in call.content.iter().enumerate() {
         let body: Node<Msg> = match content {
+            ToolCallContent::Content(content)
+                if name == "read"
+                    && matches!(
+                        &content.content,
+                        agent_client_protocol::schema::v1::ContentBlock::Text(_)
+                    ) =>
+            {
+                continue;
+            }
             ToolCallContent::Diff(diff) => {
                 let lines = diff
                     .old_text
@@ -84,11 +201,26 @@ pub fn tool(
                     }])
                     .into()
             }
+            ToolCallContent::Content(content)
+                if name == "bash"
+                    && matches!(
+                        &content.content,
+                        agent_client_protocol::schema::v1::ContentBlock::Text(_)
+                    ) =>
+            {
+                let agent_client_protocol::schema::v1::ContentBlock::Text(text) = &content.content
+                else {
+                    unreachable!()
+                };
+                ui::ansi(text.text.clone())
+                    .key(i)
+                    .role("omp.tool.bash.output")
+                    .prop("follow", false)
+                    .into()
+            }
             ToolCallContent::Content(content) => {
                 super::content::block(&content.content, format!("{i}"), model)
             }
-            // Adapter terminal metadata is independent of client-side `terminal/*`; it supplies
-            // the output of a terminal content reference without a terminal/create request.
             ToolCallContent::Terminal(terminal)
                 if meta.is_some_and(|m| {
                     m.terminal_id.as_deref() == Some(terminal.terminal_id.0.as_ref())
@@ -105,16 +237,57 @@ pub fn tool(
         };
         node = node.child(body);
     }
+    if call.content.is_empty() {
+        if name == "write"
+            && let Some(source) = arg(&["content", "text"])
+        {
+            let mut code = ui::code(source.to_owned())
+                .key("source")
+                .role("omp.tool.write.source")
+                .numbers(true);
+            if let Some(ext) = path
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).extension())
+            {
+                code = code.lang(ext.to_string_lossy().into_owned());
+            }
+            node = node.child(code);
+        } else if name == "edit"
+            && let (Some(old), Some(new)) = (
+                arg(&["old_string", "oldText"]),
+                arg(&["new_string", "newText"]),
+            )
+        {
+            node = node.child(
+                ui::diff()
+                    .key("patch")
+                    .path(path.as_deref().unwrap_or_default())
+                    .hunks(vec![Hunk {
+                        old_start: Some(1),
+                        new_start: Some(1),
+                        lines: old
+                            .lines()
+                            .map(|line| format!("-{line}"))
+                            .chain(new.lines().map(|line| format!("+{line}")))
+                            .collect(),
+                    }]),
+            );
+        }
+    }
     if let Some(meta) = meta {
         if meta.terminal_id.is_some() {
-            node = node.child(ui::ansi(meta.output.clone()).key("terminal.output"));
+            node = node.child(
+                ui::ansi(meta.output.clone())
+                    .key("terminal.output")
+                    .role("omp.tool.bash.output")
+                    .prop("follow", false),
+            );
             if meta.truncated {
-                node = node.child(ui::text("Earlier output truncated").key("terminal.truncated"));
-            }
-            if let Some(code) = meta.exit_code {
-                node = node.child(ui::badge(format!("Exit {code}")).key("terminal.exit"));
-            } else if let Some(signal) = &meta.signal {
-                node = node.child(ui::badge(format!("Signal {signal}")).key("terminal.exit"));
+                node = node.child(
+                    ui::text("Earlier output truncated")
+                        .key("terminal.truncated")
+                        .role("omp.tool.notice"),
+                );
             }
         }
         if !meta.mcp_output.is_empty() {
@@ -122,14 +295,33 @@ pub fn tool(
         }
         if let Some(error) = &meta.error {
             node = node.child(
-                ui::card()
+                ui::text(error.clone())
                     .key("codex.error")
-                    .tone("error")
-                    .child(ui::text(error.clone()).key("message")),
+                    .role("omp.tool.error")
+                    .tone("error"),
             );
         }
     }
-    if let Some(raw) = &call.raw_input {
+    if let Some(meta) = meta
+        && let Some(id) = meta
+            .terminal_id
+            .as_deref()
+            .map(|id| agent_client_protocol::schema::v1::TerminalId::new(id.to_owned()))
+        && model
+            .content
+            .terminals
+            .get(&id)
+            .is_some_and(|terminal| !terminal.released && terminal.status.is_none())
+    {
+        node = node.child(
+            html::button("Kill terminal")
+                .key("kill")
+                .on_click(Msg::KillTerminal(id)),
+        );
+    }
+    if matches!(name, "generic" | "mcp")
+        && let Some(raw) = &call.raw_input
+    {
         node = node.child(
             ui::section()
                 .key("raw.in")
@@ -139,7 +331,9 @@ pub fn tool(
                 .child(ui::code(raw.to_string()).key("body")),
         );
     }
-    if let Some(raw) = &call.raw_output {
+    if matches!(name, "generic" | "mcp")
+        && let Some(raw) = &call.raw_output
+    {
         node = node.child(
             ui::section()
                 .key("raw.out")
@@ -149,8 +343,6 @@ pub fn tool(
                 .child(ui::code(raw.to_string()).key("body")),
         );
     }
-    // Claude emits parentToolUseId on child tool calls; only nest when the parent exists.
-    // Each child is rendered once, in wire order, inside an indented agent node.
     if depth < 8 {
         let children: Vec<_> = model
             .transcript
