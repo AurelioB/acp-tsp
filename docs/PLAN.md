@@ -192,7 +192,8 @@ Acceptance: recorded ACP transcripts (JSONL via `AcpAgent::with_debug`) per agen
 - Goal (`_session/goal`) and async-task controls are advertised by both adapters only to JetBrains AIR clients; acp-tsp does not claim AIR, so the agents' own `/goal` command remains the path.
 - `_auth/status_update` → account chip (e-mail only in the details sheet). Recorder (`ACP_TSP_RECORD`) redacts auth status, e-mails, API keys/tokens and MCP `env`/`headers`; files are created `0600`.
 - Fixtures: `tests/fixtures/claude/read_and_list.jsonl`, `tests/fixtures/codex/{command,read_only_plan}.jsonl` replayed through ACP → model → view in `tests/replay_agents.rs`.
-- agy: `acp-tsp agents install agy` installs registry 1.3.0 (no registry checksum published; the installer warns); its server SIGILLs on this host, so the agy column of §5 stays unverified.
+- agy — **acceptance deferred (blocked on host)**: `acp-tsp agents install agy` installs registry 1.3.0 from `dl.google.com` over HTTPS; the registry publishes no checksum, so the download is not integrity-verified beyond TLS (the installer says so). `agy_acp_server.par` 1.3.0 (linux-x86_64) dies with `SIGILL` (`ILL_ILLOPN`) on this host (Proxmox LXC, i5-13600K) before speaking ACP; the cause (CPU feature vs. environment) is unconfirmed. No agy fixture, replay test or live smoke exists; the agy column of §5 stays unverified until `acp-tsp probe --agent agy` and a smoke run succeed on another host.
+- The Codex steering quirk applies to every `codex-acp` version on purpose: re-check `idleBehavior` handling whenever the Codex preset is bumped and drop the quirk once the adapter honours it.
 - Live-found polish: Tern hides status segments that overflow; the dock now drops steady-state text so mode/model/effort chips stay visible.
 
 ---
