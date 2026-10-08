@@ -1,0 +1,88 @@
+---
+source: tests/ui_view.rs
+expression: wire(&model)
+---
+{
+  "main": {
+    "id": "main",
+    "k": "col",
+    "p": {
+      "key": "transcript"
+    }
+  },
+  "dock": {
+    "id": "dock",
+    "k": "col",
+    "c": [
+      {
+        "id": "dock.bar",
+        "k": "status",
+        "p": {
+          "key": "bar"
+        },
+        "c": [
+          {
+            "id": "dock.bar.agent",
+            "k": "seg",
+            "p": {
+              "text": "Agent",
+              "key": "agent"
+            }
+          },
+          {
+            "id": "dock.bar.state",
+            "k": "seg",
+            "p": {
+              "text": "Exited",
+              "key": "state"
+            }
+          }
+        ]
+      },
+      {
+        "id": "dock.ed",
+        "k": "editor",
+        "p": {
+          "key": "ed",
+          "text": "",
+          "cursor": 0,
+          "placeholder": "Message (Enter sends · Shift+Enter newline)",
+          "readonly": true,
+          "sendable": false
+        }
+      }
+    ]
+  },
+  "layer": {
+    "id": "layer",
+    "k": "col",
+    "c": [
+      {
+        "id": "layer.exited",
+        "k": "card",
+        "p": {
+          "key": "exited",
+          "head": "Agent exited"
+        },
+        "c": [
+          {
+            "id": "layer.exited.reason",
+            "k": "md",
+            "p": {
+              "text": "Process crashed",
+              "key": "reason"
+            }
+          },
+          {
+            "id": "layer.exited.hint",
+            "k": "text",
+            "p": {
+              "text": "Press r to restart or Ctrl+D to quit",
+              "key": "hint"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

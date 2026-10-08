@@ -1,0 +1,96 @@
+---
+source: tests/ui_view.rs
+expression: wire(&model)
+---
+{
+  "main": {
+    "id": "main",
+    "k": "col",
+    "p": {
+      "key": "transcript"
+    }
+  },
+  "dock": {
+    "id": "dock",
+    "k": "col",
+    "c": [
+      {
+        "id": "dock.bar",
+        "k": "status",
+        "p": {
+          "key": "bar"
+        },
+        "c": [
+          {
+            "id": "dock.bar.agent",
+            "k": "seg",
+            "p": {
+              "text": "Agent",
+              "key": "agent"
+            }
+          },
+          {
+            "id": "dock.bar.state",
+            "k": "seg",
+            "p": {
+              "text": "Starting",
+              "key": "state"
+            }
+          }
+        ]
+      },
+      {
+        "id": "dock.ed",
+        "k": "editor",
+        "p": {
+          "key": "ed",
+          "text": "",
+          "cursor": 0,
+          "placeholder": "Message (Enter sends · Shift+Enter newline)",
+          "readonly": true,
+          "sendable": false
+        }
+      }
+    ]
+  },
+  "layer": {
+    "id": "layer",
+    "k": "col",
+    "c": [
+      {
+        "id": "layer.permission",
+        "k": "card",
+        "p": {
+          "key": "permission",
+          "head": "Run tests"
+        },
+        "c": [
+          {
+            "id": "layer.permission.option.0",
+            "k": "el",
+            "p": {
+              "tag": "button",
+              "text": "1. Allow once",
+              "key": "option.0",
+              "actions": {
+                "click": "click"
+              }
+            }
+          },
+          {
+            "id": "layer.permission.option.1",
+            "k": "el",
+            "p": {
+              "tag": "button",
+              "text": "2. Reject once",
+              "key": "option.1",
+              "actions": {
+                "click": "click"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

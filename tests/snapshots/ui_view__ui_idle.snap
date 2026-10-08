@@ -1,0 +1,56 @@
+---
+source: tests/ui_view.rs
+expression: "wire(&Model::default())"
+---
+{
+  "main": {
+    "id": "main",
+    "k": "col",
+    "p": {
+      "key": "transcript"
+    }
+  },
+  "dock": {
+    "id": "dock",
+    "k": "col",
+    "c": [
+      {
+        "id": "dock.bar",
+        "k": "status",
+        "p": {
+          "key": "bar"
+        },
+        "c": [
+          {
+            "id": "dock.bar.agent",
+            "k": "seg",
+            "p": {
+              "text": "Agent",
+              "key": "agent"
+            }
+          },
+          {
+            "id": "dock.bar.state",
+            "k": "seg",
+            "p": {
+              "text": "Starting",
+              "key": "state"
+            }
+          }
+        ]
+      },
+      {
+        "id": "dock.ed",
+        "k": "editor",
+        "p": {
+          "key": "ed",
+          "text": "",
+          "cursor": 0,
+          "placeholder": "Message (Enter sends · Shift+Enter newline)",
+          "readonly": false,
+          "sendable": true
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,180 @@
+---
+source: tests/ui_view.rs
+expression: wire(&model)
+---
+{
+  "main": {
+    "id": "main",
+    "k": "col",
+    "p": {
+      "key": "transcript"
+    },
+    "c": [
+      {
+        "id": "main.entry.1",
+        "k": "card",
+        "p": {
+          "key": "entry.1",
+          "tone": "user"
+        },
+        "c": [
+          {
+            "id": "main.entry.1.body",
+            "k": "md",
+            "p": {
+              "text": "Fix it",
+              "key": "body"
+            }
+          }
+        ]
+      },
+      {
+        "id": "main.entry.2",
+        "k": "section",
+        "p": {
+          "key": "entry.2",
+          "head": "Thinking",
+          "collapsible": true,
+          "collapsed": false
+        },
+        "c": [
+          {
+            "id": "main.entry.2.body",
+            "k": "md",
+            "p": {
+              "text": "Investigating",
+              "key": "body",
+              "tone": "muted"
+            }
+          }
+        ]
+      },
+      {
+        "id": "main.entry.3",
+        "k": "tool",
+        "p": {
+          "name": "edit",
+          "key": "entry.3",
+          "title": "Edit source",
+          "status": "pending",
+          "collapsible": true
+        },
+        "c": [
+          {
+            "id": "main.entry.3.0",
+            "k": "diff",
+            "p": {
+              "key": 0,
+              "path": "/tmp/main.rs",
+              "hunks": [
+                {
+                  "oldStart": 1,
+                  "newStart": 1,
+                  "lines": [
+                    "-old",
+                    "+new"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "main.entry.4",
+        "k": "checklist",
+        "p": {
+          "key": "entry.4",
+          "phases": [
+            {
+              "id": "plan",
+              "title": "Plan",
+              "items": [
+                {
+                  "id": "task.0",
+                  "text": "Review",
+                  "status": "active"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "main.entry.5",
+        "k": "md",
+        "p": {
+          "text": "Fixed.",
+          "key": "entry.5",
+          "stream": true
+        }
+      }
+    ]
+  },
+  "dock": {
+    "id": "dock",
+    "k": "col",
+    "c": [
+      {
+        "id": "dock.bar",
+        "k": "status",
+        "p": {
+          "key": "bar"
+        },
+        "c": [
+          {
+            "id": "dock.bar.agent",
+            "k": "seg",
+            "p": {
+              "text": "Agent",
+              "key": "agent"
+            }
+          },
+          {
+            "id": "dock.bar.state",
+            "k": "seg",
+            "p": {
+              "text": "Starting",
+              "key": "state"
+            }
+          },
+          {
+            "id": "dock.bar.turn",
+            "k": "seg",
+            "p": {
+              "text": "Working",
+              "key": "turn"
+            }
+          },
+          {
+            "id": "dock.bar.spinner",
+            "k": "spinner",
+            "p": {
+              "key": "spinner"
+            }
+          },
+          {
+            "id": "dock.bar.elapsed",
+            "k": "elapsed",
+            "p": {
+              "key": "elapsed",
+              "age": 0
+            }
+          }
+        ]
+      },
+      {
+        "id": "dock.ed",
+        "k": "editor",
+        "p": {
+          "key": "ed",
+          "text": "",
+          "cursor": 0,
+          "placeholder": "Message (Enter sends · Shift+Enter newline)",
+          "readonly": false,
+          "sendable": true
+        }
+      }
+    ]
+  }
+}
