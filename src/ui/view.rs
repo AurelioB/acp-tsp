@@ -1,14 +1,15 @@
 //! Whole-view rendering from session state; no terminal I/O.
 
 use agent_client_protocol::schema::v1::{
-    AuthMethod, ContentBlock, PlanEntryStatus, ToolCallContent, ToolCallStatus, ToolKind,
+    ContentBlock, PlanEntryStatus, SessionConfigOptionCategory, ToolCallContent, ToolCallStatus,
+    ToolKind,
 };
 use tern_sdk::{
     Capabilities,
     ui::{self, ChecklistItem, Hunk, ItemStatus, Node, Phase, Status, View, html},
 };
 
-use super::{Msg, composer::Composer};
+use super::{Msg, auth, composer::Composer, prefs};
 use crate::model::{EntryKind, Model, Turn};
 
 pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Msg> {
@@ -190,6 +191,30 @@ pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Ms
         .key("bar")
         .child(ui::seg(title).key("agent"))
         .child(ui::seg(state).key("state"));
+    if let Some(session) = &model.session {
+        if let Some(title) = &session.title {
+            bar = bar.child(ui::seg(title.clone()).key("session"));
+        }
+        if let Some(mode) = prefs::chip(model, SessionConfigOptionCategory::Mode).or_else(|| {
+            session.modes.as_ref().and_then(|modes| {
+                modes
+                    .available_modes
+                    .iter()
+                    .find(|mode| mode.id == modes.current_mode_id)
+                    .map(|mode| mode.name.clone())
+            })
+        }) {
+            bar = bar.child(ui::seg(mode).key("mode"));
+        }
+        for (key, category) in [
+            ("model", SessionConfigOptionCategory::Model),
+            ("effort", SessionConfigOptionCategory::ThoughtLevel),
+        ] {
+            if let Some(value) = prefs::chip(model, category) {
+                bar = bar.child(ui::seg(value).key(key));
+            }
+        }
+    }
     if let Turn::Running { since, cancelling } = model.turn {
         bar = bar
             .child(ui::seg(if cancelling { "Cancelling" } else { "Working" }).key("turn"))
@@ -237,36 +262,7 @@ pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Ms
         }
         result = result.layer(ui::col().child(dialog));
     } else if let Some(auth) = &model.auth {
-        let mut dialog = ui::card().key("auth").head("Authenticate");
-        if let Some(message) = &auth.message {
-            dialog = dialog.child(ui::md(message.clone()).key("message"));
-        }
-        for (i, method) in auth.methods.iter().enumerate() {
-            match method {
-                AuthMethod::Agent(_) => {
-                    dialog = dialog.child(
-                        html::button(format!("{}. {}", i + 1, method.name()))
-                            .key(format!("method.{i}"))
-                            .on_click(Msg::Authenticate(method.id().clone())),
-                    );
-                }
-                AuthMethod::Terminal(_) => {
-                    dialog = dialog.child(
-                        html::p(format!(
-                            "{} (terminal authentication unavailable)",
-                            method.name()
-                        ))
-                        .key(format!("method.{i}")),
-                    );
-                }
-                _ => {}
-            }
-        }
-        if auth.methods.is_empty() {
-            dialog =
-                dialog.child(ui::text("No authentication methods were advertised").key("empty"));
-        }
-        result = result.layer(ui::col().child(dialog));
+        result = result.layer(auth::picker(auth, model.auth_selected));
     } else if let Some(reason) = &model.exited {
         result = result.layer(
             ui::col().child(

@@ -39,6 +39,10 @@ Built-in adapters are pinned: Claude `@agentclientprotocol/claude-agent-acp@0.87
 | Key | Action |
 |---|---|
 | Enter / Shift+Enter | send / newline |
+| `/` (empty composer) | search agent slash commands and client actions |
+| ↑ ↓, Enter, Escape (picker) | choose, activate, or close the picker |
+| `r`, `d` (session picker) | resume; delete after pressing `d` again to confirm |
+| Shift+Tab | cycle mode (prefers the agent's mode config option) |
 | ↑ ↓ | prompt history |
 | Escape, Ctrl+C | cancel the running turn |
 | 1–9, Escape | answer the permission dialog (Escape rejects) |
@@ -46,6 +50,13 @@ Built-in adapters are pinned: Claude `@agentclientprotocol/claude-agent-acp@0.87
 | Ctrl+D (empty composer), Ctrl+C twice | quit |
 
 Prompts typed during a turn are queued and sent when it ends.
+
+The slash picker offers `/new`, `/sessions`, `/resume`, `/close`, `/delete`,
+`/mode`, `/config`, `/logout`, `/restart`, and `/quit` when supported by the
+agent; `/fork` and `/providers` appear when their unstable capabilities are
+available. Agent commands are inserted into the composer and sent as ordinary
+prompt text on Enter. Session settings use a native preferences sheet; terminal
+login methods temporarily hand the pane back to the terminal, then reconnect.
 
 ## Logs and environment
 

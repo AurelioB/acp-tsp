@@ -1,0 +1,47 @@
+---
+source: tests/ui_sessions.rs
+expression: "layer(View::new().layer(prefs::render(&model)))"
+---
+{
+  "id": "layer",
+  "k": "prefs",
+  "p": {
+    "key": "config",
+    "title": "Session configuration",
+    "sections": [
+      {
+        "id": "options",
+        "title": "Agent settings",
+        "rows": [
+          {
+            "id": "mode",
+            "label": "Mode",
+            "control": {
+              "k": "choice",
+              "value": "plan",
+              "options": [
+                {
+                  "value": "plan",
+                  "label": "Plan"
+                },
+                {
+                  "value": "build",
+                  "label": "Build"
+                }
+              ],
+              "style": "menu"
+            }
+          },
+          {
+            "id": "safe",
+            "label": "Safe",
+            "control": {
+              "k": "switch",
+              "on": true
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

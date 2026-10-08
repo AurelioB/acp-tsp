@@ -3,6 +3,7 @@ use std::{cell::RefCell, collections::VecDeque, io, rc::Rc, time::Duration};
 use acp_tsp::{
     bus::{event_channel, wake_pair},
     event::{BridgeEvent, UiCmd},
+    launch::AgentLaunch,
     ui::{UiExit, UiOptions, run_with_terminal},
 };
 use agent_client_protocol::schema::v1::{
@@ -96,6 +97,12 @@ fn scripted_handshake_prompt_and_agent_frame() {
             UiOptions {
                 agent: "Claude".into(),
                 cwd: std::env::temp_dir(),
+                launch: AgentLaunch {
+                    name: "Claude".into(),
+                    command: "true".into(),
+                    args: vec![],
+                    env: Default::default(),
+                },
             },
             rx,
             cmd_tx
@@ -133,6 +140,12 @@ fn closed_agent_stays_visible_until_ctrl_d() {
             UiOptions {
                 agent: "Claude".into(),
                 cwd: std::env::temp_dir(),
+                launch: AgentLaunch {
+                    name: "Claude".into(),
+                    command: "true".into(),
+                    args: vec![],
+                    env: Default::default(),
+                },
             },
             events,
             cmds
@@ -173,6 +186,12 @@ fn answering_a_permission_closes_its_dialog() {
         UiOptions {
             agent: "Codex".into(),
             cwd: std::env::temp_dir(),
+            launch: AgentLaunch {
+                name: "Codex".into(),
+                command: "true".into(),
+                args: vec![],
+                env: Default::default(),
+            },
         },
         rx,
         cmd_tx,

@@ -17,6 +17,7 @@ pub enum Action {
     None,
     Changed,
     Command(UiCmd),
+    AuthTerminal(usize),
     Quit,
 }
 

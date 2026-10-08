@@ -12,7 +12,7 @@
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, RawFd};
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -128,16 +128,72 @@ pub fn event_channel(waker: Waker) -> (EventTx, EventRx) {
 pub struct WakeTerm {
     tty: Tty,
     wake: WakeFd,
+    termios: TermiosController,
 }
 
 impl WakeTerm {
-    /// Puts the tty in raw mode.
+    /// Puts the tty in raw mode, saving the cooked state before opening it.
     pub fn open(wake: WakeFd) -> io::Result<Self> {
+        let saved = read_termios()?;
+        let tty = Tty::open()?;
+        let raw = read_termios()?;
         Ok(Self {
-            tty: Tty::open()?,
+            tty,
             wake,
+            termios: TermiosController(Arc::new(Mutex::new((saved, raw)))),
         })
     }
+
+    pub fn termios_controller(&self) -> TermiosController {
+        self.termios.clone()
+    }
+}
+
+/// Raw/cooked state retained independently of the terminal moved into `Session`.
+#[derive(Debug, Clone)]
+pub struct TermiosController(Arc<Mutex<(libc::termios, libc::termios)>>);
+
+impl TermiosController {
+    /// Restore cooked input and terminal input modes for an interactive child,
+    /// then restore raw mode even if the child fails.
+    pub fn with_cooked<T>(&self, run: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        let modes = self.0.lock().expect("termios mutex poisoned");
+        write_input_modes(b"\x1b[?2004l\x1b[<u")?;
+        if let Err(error) = set_termios(&modes.0) {
+            let _ = write_input_modes(b"\x1b[?2004h\x1b[>1u");
+            return Err(error);
+        }
+        let result = run();
+        let raw = set_termios(&modes.1);
+        let enabled = write_input_modes(b"\x1b[?2004h\x1b[>1u");
+        raw?;
+        enabled?;
+        result
+    }
+}
+
+fn write_input_modes(bytes: &[u8]) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(bytes)?;
+    stdout.flush()
+}
+
+fn read_termios() -> io::Result<libc::termios> {
+    let mut result = std::mem::MaybeUninit::uninit();
+    // SAFETY: tcgetattr initializes the termios pointed to on success.
+    if unsafe { libc::tcgetattr(libc::STDIN_FILENO, result.as_mut_ptr()) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: tcgetattr succeeded and initialized result.
+    Ok(unsafe { result.assume_init() })
+}
+
+fn set_termios(value: &libc::termios) -> io::Result<()> {
+    // SAFETY: `value` is initialized and lives across the call.
+    if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, value) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 impl Terminal for WakeTerm {

@@ -109,8 +109,9 @@ fn run_session(cli: Cli) -> anyhow::Result<()> {
     ));
     let ui_result = ui::run(
         ui::UiOptions {
-            agent: launch.name,
+            agent: launch.name.clone(),
             cwd,
+            launch,
         },
         events_rx,
         wake_fd,
