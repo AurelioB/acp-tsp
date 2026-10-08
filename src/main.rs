@@ -199,8 +199,7 @@ fn init_logging() -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard>
     let appender = tracing_appender::rolling::never(directory, "acp-tsp.log");
     let (writer, guard) = tracing_appender::non_blocking(appender);
     let filter = EnvFilter::builder()
-        .with_env_var("ACP_TSP_LOG")
-        .from_env_lossy();
+        .parse_lossy(log_directives(std::env::var("ACP_TSP_LOG").ok().as_deref()));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(writer)
@@ -208,6 +207,17 @@ fn init_logging() -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard>
         .try_init()
         .map_err(|error| anyhow::anyhow!("could not initialize file logging: {error}"))?;
     Ok(guard)
+}
+
+/// A bare level (`debug`) applies to acp-tsp only: dependency debug logs dump raw ACP
+/// payloads, which carry account e-mails. Full directives (`agent_client_protocol=debug`)
+/// are taken as written.
+fn log_directives(env: Option<&str>) -> String {
+    match env.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) if v.contains('=') || v.contains(',') => v.to_owned(),
+        Some(level) => format!("warn,acp_tsp={level}"),
+        None => "warn,acp_tsp=info".to_owned(),
+    }
 }
 
 fn probe(agent_name: Option<&str>) -> anyhow::Result<()> {
