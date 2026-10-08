@@ -150,6 +150,11 @@ impl Model {
         }
     }
 
+    /// A transcript entry is still receiving content in the current turn.
+    pub fn is_streaming(&self, entry: &Entry) -> bool {
+        matches!(self.turn, Turn::Running { .. }) && entry.turn_id == self.active_turn_id
+    }
+
     pub fn apply(&mut self, event: BridgeEvent) {
         match event {
             BridgeEvent::Status(text) => self.status = text,

@@ -59,6 +59,7 @@ fn streaming_answer_snapshot() {
         SessionUpdate::ToolCall(
             ToolCall::new("tool", "Edit source")
                 .kind(ToolKind::Edit)
+                .name("vendor-specific-write")
                 .content(vec![ToolCallContent::from(
                     agent_client_protocol::schema::v1::Diff::new("/tmp/main.rs", "new")
                         .old_text("old"),
@@ -106,6 +107,31 @@ fn exited_snapshot() {
         reason: "Process crashed".into(),
     });
     insta::assert_json_snapshot!("ui_exited", wire(&model));
+}
+
+#[test]
+fn prior_turn_thoughts_stay_collapsed_while_new_turn_streams() {
+    let mut model = Model::default();
+    model.submitted("first".into());
+    update(
+        &mut model,
+        SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            "old thought",
+        )))),
+    );
+    update(
+        &mut model,
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            "old answer",
+        )))),
+    );
+    model.apply(BridgeEvent::TurnEnded(Ok(
+        agent_client_protocol::schema::v1::StopReason::EndTurn,
+    )));
+    model.submitted("second".into());
+    let document = wire(&model);
+    assert_eq!(document["main"]["c"][1]["p"]["collapsed"], true);
+    assert_eq!(document["main"]["c"][2]["p"]["stream"], false);
 }
 
 #[test]

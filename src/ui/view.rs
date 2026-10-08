@@ -23,27 +23,29 @@ pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Ms
                 .into(),
             EntryKind::Agent { text, .. } => ui::md(text.clone())
                 .key(key)
-                .stream(matches!(model.turn, Turn::Running { .. }))
+                .stream(model.is_streaming(entry))
                 .into(),
             EntryKind::Thought { text, .. } => ui::section()
                 .key(key)
                 .head("Thinking")
                 .collapsible(true)
-                .collapsed(matches!(model.turn, Turn::Idle))
+                .collapsed(!model.is_streaming(entry))
                 .child(ui::md(text.clone()).key("body").tone("muted"))
                 .into(),
             EntryKind::Tool { call, cancelled } => {
-                let (name, _icon) = match call.kind {
-                    ToolKind::Read => ("read", "file"),
-                    ToolKind::Edit => ("edit", "edit"),
-                    ToolKind::Delete => ("delete", "trash"),
-                    ToolKind::Move => ("move", "arrow-right"),
-                    ToolKind::Search => ("search", "search"),
-                    ToolKind::Execute => ("execute", "terminal"),
-                    ToolKind::Think => ("think", "sparkle"),
-                    ToolKind::Fetch => ("fetch", "globe"),
-                    ToolKind::SwitchMode => ("switch_mode", "settings"),
-                    _ => ("other", "tool"),
+                // Tern chooses its tool glyph from `name`; normalize ACP kinds
+                // rather than relying on agent-specific programmatic names.
+                let name = match call.kind {
+                    ToolKind::Read => "read",
+                    ToolKind::Edit => "edit",
+                    ToolKind::Delete => "delete",
+                    ToolKind::Move => "move",
+                    ToolKind::Search => "search",
+                    ToolKind::Execute => "execute",
+                    ToolKind::Think => "think",
+                    ToolKind::Fetch => "fetch",
+                    ToolKind::SwitchMode => "switch_mode",
+                    _ => call.name.as_deref().unwrap_or("other"),
                 };
                 let status = if *cancelled {
                     Status::Cancelled
@@ -56,7 +58,7 @@ pub fn view(model: &Model, composer: &Composer, _caps: &Capabilities) -> View<Ms
                         _ => Status::Pending,
                     }
                 };
-                let mut tool = ui::tool(call.name.as_deref().unwrap_or(name))
+                let mut tool = ui::tool(name)
                     .key(key)
                     .title(call.title.clone())
                     .status(status)
