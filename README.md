@@ -192,4 +192,4 @@ Claude 0.87.0 (Read tool plus session/list) and Codex 2.1.1 (terminal-output
 command and read-only plan review); `tests/replay_agents.rs` replays them
 through the ACP bridge, model, and view.
 
-See [docs/PLAN.md](docs/PLAN.md) for protocol research, scope and planned stages.
+See [docs/SUPPORT.md](docs/SUPPORT.md) for what is verified per agent, and [docs/PLAN.md](docs/PLAN.md) for protocol research, scope and planned stages.

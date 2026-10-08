@@ -307,3 +307,48 @@ fn codex_exec_command_renders_as_a_shell_card_with_its_output() {
     assert_eq!(tool["c"][0]["k"], "ansi");
     assert_eq!(tool["c"][0]["p"]["text"], "a\nb\n");
 }
+
+#[test]
+fn shell_targets_keep_command_styling_and_output_survives_updates() {
+    let mut model = Model::default();
+    // A real command argument stays a command target.
+    update(
+        &mut model,
+        SessionUpdate::ToolCall(
+            ToolCall::new("bash-1", "Run tests")
+                .kind(ToolKind::Execute)
+                .raw_input(serde_json::json!({"command": "cargo test"})),
+        ),
+    );
+    // A Codex exec_command: output arrives in a later update, then a status-only update.
+    let mut call = ToolCall::new("exec-1", "List files").kind(ToolKind::Read);
+    call.name = Some("exec_command".into());
+    update(&mut model, SessionUpdate::ToolCall(call));
+    update(
+        &mut model,
+        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+            "exec-1",
+            ToolCallUpdateFields::new().content(vec![ToolCallContent::from("a\nb\n")]),
+        )),
+    );
+    update(
+        &mut model,
+        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+            "exec-1",
+            ToolCallUpdateFields::new()
+                .status(agent_client_protocol::schema::v1::ToolCallStatus::Completed),
+        )),
+    );
+    let doc = wire(&model);
+    let tools: Vec<_> = doc["main"]["c"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["k"] == "tool")
+        .collect();
+    assert_eq!(tools[0]["p"]["target"], "cargo test");
+    assert_eq!(tools[0]["p"]["targetKind"], "command");
+    assert_eq!(tools[1]["p"]["role"], "omp.tool.bash");
+    assert_eq!(tools[1]["p"]["status"], "done");
+    assert_eq!(tools[1]["c"][0]["p"]["text"], "a\nb\n");
+}
