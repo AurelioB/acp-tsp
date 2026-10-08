@@ -56,6 +56,9 @@ pub enum BridgeEvent {
         /// The agent's error message, when it gave one.
         message: Option<String>,
     },
+    /// `--resume` without an id: no session starts until the user picks one; closing the
+    /// picker asks for a new session.
+    PickSession,
     /// A session request is in flight and will replace the current session:
     /// the UI clears the transcript. For `Load`, replayed history arrives as
     /// `Update`s between this and `SessionStarted`.
@@ -120,6 +123,11 @@ pub enum BridgeEvent {
     Terminal(TerminalEvent),
     /// The prompt turn finished (the `session/prompt` response).
     TurnEnded(Result<Box<PromptResponse>, String>),
+    /// Structured Codex limits fetched out-of-band; correlated with the UI request.
+    CodexUsage {
+        generation: u64,
+        result: Result<crate::model::usage::CodexUsage, String>,
+    },
     /// `providers/list` result (unstable).
     #[cfg(feature = "unstable_llm_providers")]
     Providers(Box<ListProvidersResponse>),
@@ -190,6 +198,8 @@ pub enum UiCmd {
     /// Send a prompt. When a turn is running, the ACP side queues it and sends
     /// it after the turn ends.
     Prompt(Vec<ContentBlock>),
+    /// Fetch Codex limits through the adapter's bundled app-server sidecar.
+    FetchCodexUsage { generation: u64 },
     /// Steer the running turn with more input (`_session/steering`) when the agent advertises
     /// `_meta.steering.supported`; otherwise (or when no turn runs) the same as `Prompt`.
     Steer(Vec<ContentBlock>),

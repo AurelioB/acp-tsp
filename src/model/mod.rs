@@ -124,6 +124,15 @@ pub struct ActiveSession {
     pub updated_at: Option<String>,
 }
 
+/// How the last visible turn ended (hidden usage queries excluded).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOutcome {
+    Done,
+    Cancelled,
+    Stopped(StopReason),
+    Failed,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Turn {
     Idle,
@@ -160,6 +169,11 @@ pub struct Model {
     pub debug_updates: Vec<String>,
     pub exited: Option<String>,
     pub restartable: bool,
+    /// `--resume` without an id asked for the session picker; the UI takes it.
+    pub pick_session: bool,
+    /// Visible turns ended so far, and how the last one ended.
+    pub finished_turns: u64,
+    pub last_outcome: Option<TurnOutcome>,
     next_id: u64,
     // Locally submitted prompts are authoritative; suppress only a matching
     // streamed echo during that prompt's live turn (not other user messages).
@@ -194,6 +208,9 @@ impl Default for Model {
             ext: ext::ExtensionState::default(),
             usage_report: UsageReport::default(),
             hidden_usage: false,
+            pick_session: false,
+            finished_turns: 0,
+            last_outcome: None,
             errors: Vec::new(),
             notices: Vec::new(),
             debug_updates: Vec::new(),
@@ -278,12 +295,24 @@ impl Model {
         }
     }
 
-    /// Start a local adapter command only when idle; nothing from this turn enters history.
+    /// Start a local usage read; only Claude's prompt consumes an ACP turn.
     pub fn begin_usage(&mut self) {
         self.usage_report.pending = false;
         self.usage_report.fetching = true;
+        self.usage_report.generation = self.usage_report.generation.wrapping_add(1);
         self.usage_report.error = None;
         self.usage_report.raw.clear();
+        self.usage_report.windows.clear();
+        self.usage_report.credits = None;
+        self.usage_report.plan = None;
+        self.usage_report.resets = None;
+        if self
+            .agent
+            .as_ref()
+            .is_some_and(|agent| agent.name == crate::quirks::CODEX_ACP)
+        {
+            return;
+        }
         self.hidden_usage = true;
         self.active_turn_id += 1;
         self.local_echo = None;
@@ -291,6 +320,21 @@ impl Model {
             since: Instant::now(),
             cancelling: false,
         };
+    }
+    /// Closing a Codex dashboard invalidates an in-flight out-of-band read.
+    pub fn close_usage(&mut self) {
+        self.usage_report.open = false;
+        self.usage_report.pending = false;
+        if self
+            .agent
+            .as_ref()
+            .is_some_and(|agent| agent.name == crate::quirks::CODEX_ACP)
+            && self.usage_report.fetching
+        {
+            self.usage_report.fetching = false;
+            self.usage_report.checked = None;
+            self.usage_report.generation = self.usage_report.generation.wrapping_add(1);
+        }
     }
 
     /// A steering message belongs to the active turn, not the next-prompt queue.
@@ -333,7 +377,8 @@ impl Model {
                 self.turn_started = None;
                 self.turn_cost_at_start = None;
                 self.hidden_usage = false;
-                self.usage_report = UsageReport::default();
+                let generation = self.usage_report.generation.wrapping_add(1);
+                self.usage_report = UsageReport { generation, ..UsageReport::default() };
                 self.local_echo = None;
                 self.queued_echoes.clear();
                 self.transcript.clear();
@@ -446,6 +491,28 @@ impl Model {
             }
             BridgeEvent::Resolved(id) => self.resolve_dialog(id),
             BridgeEvent::Terminal(event) => self.content.terminal(event),
+            BridgeEvent::CodexUsage { generation, result } => {
+                if !self.usage_report.fetching
+                    || self.usage_report.generation != generation
+                    || self.agent.as_ref().is_none_or(|agent| agent.name != crate::quirks::CODEX_ACP)
+                {
+                    return;
+                }
+                self.usage_report.fetching = false;
+                self.usage_report.checked = Some(std::time::SystemTime::now());
+                match result {
+                    Ok(report) => {
+                        self.usage_report.windows = report.windows;
+                        self.usage_report.credits = report.credits;
+                        self.usage_report.plan = report.plan;
+                        self.usage_report.resets = report.resets;
+                        self.usage_report.raw = report.summary;
+                    }
+                    Err(error) => {
+                        self.usage_report.error = Some(error);
+                    }
+                }
+            }
             BridgeEvent::TurnEnded(result) => {
                 if self.hidden_usage {
                     self.hidden_usage = false;
@@ -456,20 +523,18 @@ impl Model {
                         self.usage_report.windows.clear();
                         self.usage_report.credits = None;
                         self.usage_report.plan = None;
-                    } else if let Some(command) = self.usage_command() {
-                        if let Some((windows, credits, plan)) =
-                            usage::parse(&self.usage_report.raw, command)
-                        {
-                            self.usage_report.windows = windows;
-                            self.usage_report.credits = credits;
-                            self.usage_report.plan = plan;
-                        } else {
-                            self.usage_report.windows.clear();
-                            self.usage_report.credits = None;
-                            self.usage_report.plan = None;
-                            self.usage_report.error =
-                                Some("Limits unavailable; see Details for the agent response".into());
-                        }
+                    } else if let Some((windows, credits, plan)) =
+                        usage::parse(&self.usage_report.raw)
+                    {
+                        self.usage_report.windows = windows;
+                        self.usage_report.credits = credits;
+                        self.usage_report.plan = plan;
+                    } else {
+                        self.usage_report.windows.clear();
+                        self.usage_report.credits = None;
+                        self.usage_report.plan = None;
+                        self.usage_report.error =
+                            Some("Limits unavailable; see Details for the agent response".into());
                     }
                     // A prompt typed while the usage query ran was queued behind it.
                     self.start_queued_or_idle();
@@ -532,6 +597,13 @@ impl Model {
                         }
                     }
                 }
+                self.finished_turns += 1;
+                self.last_outcome = Some(match &result {
+                    Ok(StopReason::EndTurn) => TurnOutcome::Done,
+                    Ok(StopReason::Cancelled) => TurnOutcome::Cancelled,
+                    Ok(reason) => TurnOutcome::Stopped(*reason),
+                    Err(_) => TurnOutcome::Failed,
+                });
                 match result {
                     Ok(StopReason::EndTurn) => {}
                     Ok(_) if summarized => {}
@@ -542,6 +614,10 @@ impl Model {
                 self.start_queued_or_idle();
             }
             BridgeEvent::Error(error) => self.errors.push(error),
+            BridgeEvent::PickSession => {
+                self.pick_session = true;
+                self.status = "Pick a session".into();
+            }
             BridgeEvent::AgentExited { reason } => {
                 self.exited = Some(reason);
                 self.turn = Turn::Idle;
@@ -557,6 +633,7 @@ impl Model {
                 self.hidden_usage = false;
                 self.usage_report.fetching = false;
                 self.usage_report.pending = false;
+                self.usage_report.generation = self.usage_report.generation.wrapping_add(1);
                 self.loading_info = None;
                 self.queued = 0;
             }
@@ -579,16 +656,25 @@ impl Model {
         self.permissions.iter().find(|p| p.id == *id)
     }
 
-    /// The agent-local command with no model call; unknown agents have no usage command.
+    /// Claude's advertised local command; Codex uses the independent sidecar.
     pub fn usage_command(&self) -> Option<&'static str> {
-        // Only commands the adapter answers locally, without a model call (verified in their
-        // sources: claude-agent-acp's `/usage` handler, codex-acp's `/status` handler), and only
-        // when advertised. Another agent's `/usage` may be a model prompt.
-        let advertised = |name: &str| self.sessions.commands.iter().any(|c| c.name == name);
+        let advertised = self.sessions.commands.iter().any(|c| c.name == "usage");
         match self.agent.as_ref().map(|agent| agent.name.as_str()) {
-            Some(crate::quirks::CODEX_ACP) if advertised("status") => Some("/status"),
-            Some(crate::quirks::CLAUDE_ACP) if advertised("usage") => Some("/usage"),
+            Some(crate::quirks::CLAUDE_ACP) if advertised => Some("/usage"),
             _ => None,
+        }
+    }
+
+    pub fn usage_request(&self) -> Option<crate::event::UiCmd> {
+        match self.agent.as_ref().map(|agent| agent.name.as_str()) {
+            Some(crate::quirks::CODEX_ACP) => Some(crate::event::UiCmd::FetchCodexUsage {
+                generation: self.usage_report.generation,
+            }),
+            _ => self.usage_command().map(|command| {
+                crate::event::UiCmd::Prompt(vec![ContentBlock::Text(
+                    agent_client_protocol::schema::v1::TextContent::new(command),
+                )])
+            }),
         }
     }
 

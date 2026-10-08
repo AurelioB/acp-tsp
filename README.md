@@ -21,10 +21,25 @@ acp-tsp agents
 acp-tsp setup-tern --agent claude
 ```
 
-Use `--load ID` to replay an existing session (falling back to resume if replay is unsupported),
-`--resume ID` to resume without replay, or `--continue` to pick the most recently updated session
-in the working directory. These flags are mutually exclusive. Repeat `--add-dir DIR` to expose
+Resume earlier sessions from the command line (any agent that can load or resume sessions):
+
+```sh
+acp-tsp --agent codex --resume        # pick one of this directory's sessions
+acp-tsp --agent codex --resume ID     # reopen ID, replaying its history when the agent can
+acp-tsp --agent codex --continue      # the most recently updated session here
+```
+
+On quit, acp-tsp prints the exact `--resume` command for the open session. Closing the
+`--resume` picker starts a new session; agents that cannot list sessions start a new one with a
+notice. `--resume` and `--continue` are mutually exclusive. Repeat `--add-dir DIR` to expose
 additional existing workspace directories when the agent supports them.
+
+The pane follows the session: its title is the session title (the agent's name until there is
+one, OSC 2), Tern's working indicator runs during a turn and pauses while a permission request,
+question or sign-in waits (OSC 9;4), and Tern's attention inbox gets "Permission needed",
+"Question waiting", "Stopped with error" and "Agent exited" notices (OSC 99). A finished turn
+is the progress clearing: in an agent block Tern records it as `agent-done` itself. Cancelled
+turns and hidden usage queries stay quiet.
 
 `setup-tern` updates `agent_command` in Tern's settings, making a timestamped backup first. It leaves `new_blocks` unchanged unless passed `--new-blocks-agent`; `--settings PATH` overrides settings location and `--print` prints the JSON snippet without writing. On Linux the default settings location is `$XDG_CONFIG_HOME/tern/settings.json` (or `~/.config/tern/settings.json`), a best-known default that may vary by Tern installation. macOS uses `~/Library/Application Support/Tern/settings.json`.
 
@@ -162,9 +177,12 @@ first; client actions are labeled `acp-tsp ·` so identical names (such as Claud
 sent as ordinary prompt text on Enter, except Claude's `/usage`, which opens the
 client usage dashboard. A client command typed or pasted in full
 (`/sessions` + Enter) runs directly unless the agent advertises the same name;
-the agent command wins (except `/usage`). `/usage` uses Claude's local `/usage` or
-Codex's local `/status` behind the scenes, only while idle, without adding a
-transcript turn. Refresh with `r`; Details shows the unmodified agent report.
+the agent command wins (except `/usage`). `/usage` uses Claude's local `/usage`
+only while idle, hiding its query turn. Codex limits come from a short-lived
+`codex-acp cli app-server` sidecar calling `account/rateLimits/read`, even during
+a running turn; it reports windows, credit balance, and available resets.
+Refresh with `r`; Details shows Claude's report or a human-readable Codex summary
+(without account or reset-credit IDs). Claude does not expose reset credits.
 Codex's `/status` remains available as an ordinary agent command.
 The dashboard also totals this session's reported tokens, cost, context and turn
 durations; no cross-session activity is inferred. The composer usage text and

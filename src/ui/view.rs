@@ -448,7 +448,13 @@ fn welcome(model: &Model) -> Node<Msg> {
         .session
         .as_ref()
         .map(|session| session.cwd.display().to_string())
-        .unwrap_or_else(|| "Starting session…".into());
+        .unwrap_or_else(|| {
+            if model.status.is_empty() {
+                "Starting session…".into()
+            } else {
+                model.status.clone()
+            }
+        });
     ui::card()
         .key("welcome")
         .role("omp.welcome")

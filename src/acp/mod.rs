@@ -52,6 +52,50 @@ impl Shared {
     }
 }
 
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Route independent Codex limit reads around the ACP session state machine.
+/// A JoinSet permits at most one sidecar and aborts it on controller shutdown.
+async fn dispatch_usage(
+    mut incoming: UnboundedReceiver<UiCmd>,
+    forwarded: tokio::sync::mpsc::UnboundedSender<UiCmd>,
+    launch: AgentLaunch,
+    events: EventTx,
+) {
+    let mut reads = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            cmd = incoming.recv() => {
+                match cmd {
+                    Some(UiCmd::FetchCodexUsage { generation }) => {
+                        // A refresh supersedes a previous request, including after reopening.
+                        reads.abort_all();
+                        while reads.join_next().await.is_some() {}
+                        let launch = launch.clone();
+                        reads.spawn(async move { (generation, crate::codex_limits::fetch(&launch).await) });
+                    }
+                    Some(cmd) => {
+                        let shutdown = matches!(cmd, UiCmd::Shutdown);
+                        if forwarded.send(cmd).is_err() || shutdown { break; }
+                    }
+                    None => break,
+                }
+            }
+            result = reads.join_next(), if !reads.is_empty() => {
+                if let Some(Ok((generation, result))) = result {
+                    events.send(BridgeEvent::CodexUsage { generation, result });
+                }
+            }
+        }
+    }
+}
+
 /// Launch an ACP process, restarting it on request. Dropping the connection
 /// terminates the SDK-owned process group (including wrapper descendants).
 pub async fn run(
@@ -68,11 +112,18 @@ pub async fn run_recorded(
     launch: AgentLaunch,
     options: SessionOptions,
     events: EventTx,
-    mut cmds: UnboundedReceiver<UiCmd>,
+    cmds: UnboundedReceiver<UiCmd>,
     record: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let record = record.or_else(|| std::env::var_os("ACP_TSP_RECORD").map(PathBuf::from));
     let recorder = record.map(Recorder::open).transpose()?;
+    let (forwarded, mut session_cmds) = tokio::sync::mpsc::unbounded_channel();
+    let _usage_dispatch = AbortOnDrop(tokio::spawn(dispatch_usage(
+        cmds,
+        forwarded,
+        launch.clone(),
+        events.clone(),
+    )));
     loop {
         let config = AcpAgentConfig::new(&launch.command)
             .args(launch.args.clone())
@@ -82,7 +133,7 @@ pub async fn run_recorded(
             let recorder = recorder.clone();
             agent = agent.with_debug(move |line, direction| recorder.record(line, direction));
         }
-        let restart = drive(agent, options.clone(), events.clone(), &mut cmds).await?;
+        let restart = drive(agent, options.clone(), events.clone(), &mut session_cmds).await?;
         if !restart {
             return Ok(());
         }

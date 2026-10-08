@@ -113,6 +113,11 @@ impl Model {
         cap.list.is_some() && (self.capabilities.load_session || cap.resume.is_some())
     }
 
+    /// Whether a later `--resume <id>` can reopen a session (load or resume, no listing needed).
+    pub fn can_reopen_sessions(&self) -> bool {
+        self.capabilities.load_session || self.capabilities.session_capabilities.resume.is_some()
+    }
+
     pub fn open_session(&self, id: SessionId) -> Option<UiCmd> {
         if self.capabilities.load_session {
             Some(UiCmd::LoadSession(id))

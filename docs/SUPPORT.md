@@ -27,11 +27,13 @@ Status meanings:
 | session/cancel, mid-turn stop | yes | live (Escape and stop button) | live (Escape) | unknown |
 | fs/read_text_file, fs/write_text_file | yes | fake (not observed live) | n/a (agent) | unknown |
 | terminal/* (client terminals) | yes | n/a (agent) | n/a (agent) | unknown |
-| session/list + load | yes | live | fake | unknown |
+| session/list + load | yes | live | live | unknown |
 | session/resume, close, delete, fork | yes | fake | fake | unknown |
+| CLI `--resume ID` / `--resume` picker / `--continue`, resume hint on quit | yes | live (`--resume ID` replays history) | live (all three; a session open in another Codex client fails with Codex's own error) | unknown |
+| pane title (OSC 2), working/waiting progress (OSC 9;4), attention notices (OSC 99) | yes | live (title, resume) | live (agent block: busy during turns, `waiting` inbox entry for a permission, one `agent-done` on completion) | unknown |
 | modes / config options / model picker | yes | live (chips, sheet) | live (Shift+Tab mode, picker) | unknown |
 | slash commands, `@` mentions | yes | live | live (`/`) | unknown |
-| usage dashboard (hidden local command, limits, session totals) | yes | live (`/usage`) | live (`/status`) | unknown |
+| usage dashboard (limits, available resets, session totals) | yes | live (`/usage`: windows with reset times; no consumable reset credits exist in claude-agent-acp 0.87.0's usage schema) | live (`account/rateLimits/read` via `codex-acp cli app-server`: windows, credits, available resets) | n/a (agent): agy 1.3.0 has no usage query; a quota-exhausted turn error carries the reset time |
 | elicitation: form | yes | live (AskUserQuestion) | live (`request_user_input`: Plan mode; Default mode with Codex's `default_mode_request_user_input` feature; choice, "None of the above" + note) | unknown |
 | elicitation: URL | yes | fake | fake (device-code login uses it) | unknown |
 | usage_update (context, cost) | yes | live | live (context only; ChatGPT plans report no cost) | unknown |
@@ -42,7 +44,7 @@ Status meanings:
 | steering (`_session/steering`) | yes | live | disabled: the adapter ignores `idleBehavior` (`quirks::steering`) | unknown |
 | `_auth/status_update` account chip | yes | live | live | unknown |
 | `_claude/rateLimit` banner | yes | fake | n/a | n/a |
-| Codex 5h/weekly limits | yes | n/a | weekly live; 5h format supported (adapter source) | n/a |
+| Codex 5h/weekly limits and available resets | yes | n/a | structured sidecar response | n/a |
 | goal / async tasks | no | n/a (agent): JetBrains AIR clients only | n/a (agent): JetBrains AIR clients only | n/a |
 | notices, compaction, subagents, providers (unstable) | yes | fake | fake | unknown |
 | configured MCP servers | yes | fake | fake | unknown |
@@ -54,12 +56,29 @@ Other ACP agents (Gemini CLI, OpenCode, Goose, …) start via `acp-tsp -- <comma
 
 Usage numbers come from `PromptResponse.usage`, which ACP defines as per-turn usage. "In" counts uncached input plus cache reads and writes. Each turn re-sends the whole conversation, so tens of thousands of input tokens on one turn are normal; the cached share shows how much of that was cheap. When an agent reports no usage, only the duration is shown. How the adapter sums several model requests within one turn is its own responsibility. acp-tsp displays the reported totals and has not compared them with per-request numbers.
 
-The client `/usage` dashboard queries the active adapter's local command only when idle. Claude's
-`/usage` reports percent **used**; Codex's `/status` reports percent **left**. Both are normalized
-to a used-fraction bar labeled with percent left. Query turns are hidden from transcript and per-session turn totals.
-The adapter's raw markdown remains available in Details (including account information).
-Only these two adapters are queried, and only when they advertise the command: both answer it without a model call. Another agent's `/usage` could be an ordinary model prompt, so other agents show session totals only.
+The client `/usage` dashboard queries Claude's advertised local `/usage` only while idle;
+its percent **used** is normalized to a used-fraction bar labeled with percent left.
+The hidden Claude query contributes nothing to transcript or session turn totals. Claude's
+raw markdown appears in Details. Claude exposes no reset credits.
 
-Why parse text at all: Codex keeps its rate limits inside the adapter and only renders them in `/status` text. Claude does stream structured `_meta["_claude/rateLimit"]` events (`rateLimitType`, `utilization`, `resetsAt`). But each event covers one window, and they arrive only when the SDK emits a rate-limit event, so they can't build the full set of limits on demand. acp-tsp uses them for the rate-limit warning banner, and Claude's `/usage` for the dashboard. The text parsers are pinned to claude-agent-acp 0.87.0 and codex-acp 2.1.1, tested against captured output (`tests/fixtures/{claude/usage.md,codex/status.md}`). If the wording changes, no limit rows are shown and the raw report stays in Details. Values are never carried over from an earlier check, and "checked … ago" shows how old they are.
+Codex's dashboard fetches structured limits from its bundled CLI app-server through
+`codex-acp cli app-server` (`account/rateLimits/read`), using the session launch command,
+arguments and environment in a separate, short-lived process. It does not require an idle
+ACP session or make a prompt turn. The response includes available reset credits (the list
+may be shorter than its count); account and credit IDs are never displayed or logged.
+Codex Details is a human-readable summary, not raw JSON. Agents without a supported query
+(agy, others) show session totals and "This agent does not offer a local usage command"
+instead of limits, never zero. Values are replaced on refresh, and "checked … ago" shows
+how old they are.
+
+"Resets" means two things. Reset **times** (when a window refills) come from Claude's `/usage`
+and Codex's `resetsAt`. Reset **credits** (consumable early resets) exist only in Codex's
+`rateLimitResetCredits`; acp-tsp shows the count and expiry dates and never redeems them.
+
+Claude does stream structured `_meta["_claude/rateLimit"]` events (`rateLimitType`,
+`utilization`, `resetsAt`), but each covers one window only when the SDK emits it. Those
+events drive the rate-limit warning banner; Claude's local `/usage` supplies the complete
+on-demand dashboard. Its parser is tested against `tests/fixtures/claude/usage.md`;
+Codex's structured response against `tests/fixtures/codex/rate_limits.json`.
 
 Fixture tests: `tests/replay_agents.rs` with `tests/fixtures/{claude,codex}/*.jsonl`. Footer arithmetic: `src/ui/view.rs::tests::turn_footer_counts_cached_context_as_input`.

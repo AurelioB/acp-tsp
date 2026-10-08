@@ -7,6 +7,7 @@
 pub mod acp;
 pub mod agents;
 pub mod bus;
+pub mod codex_limits;
 pub mod config;
 pub mod event;
 pub mod host;

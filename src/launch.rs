@@ -34,6 +34,9 @@ pub enum StartSession {
     Resume(SessionId),
     /// The most recently updated session for the cwd (`session/list`), else a new one.
     Latest,
+    /// Let the user pick from the cwd's sessions (`session/list`); closing the picker starts a
+    /// new session.
+    Pick,
 }
 
 /// Session setup shared by every session the ACP side creates.

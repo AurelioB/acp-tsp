@@ -50,6 +50,12 @@ pub fn render(model: &Model) -> Node<Msg> {
     if report.details {
         let raw: Node<Msg> = if report.raw.is_empty() {
             ui::text("No agent report yet.").key("raw").into()
+        } else if model
+            .agent
+            .as_ref()
+            .is_some_and(|agent| agent.name == crate::quirks::CODEX_ACP)
+        {
+            ui::text(report.raw.clone()).key("raw").into()
         } else {
             ui::md(report.raw.clone()).key("raw").into()
         };
@@ -118,9 +124,56 @@ pub fn render(model: &Model) -> Node<Msg> {
             provider = provider.child(row);
         }
         if let Some(credits) = &report.credits {
-            provider = provider.child(ui::text(credits_text(credits)).key("credits"));
+            provider =
+                provider.child(ui::text(crate::model::usage::credits_text(credits)).key("credits"));
         }
-        if report.windows.is_empty() {
+        if let Some(resets) = &report.resets {
+            let count = if resets.available == 0 {
+                "No resets available".to_owned()
+            } else {
+                format!("{} available", resets.available)
+            };
+            provider = provider.child(
+                ui::row()
+                    .key("resets")
+                    .role("omp.usage.window")
+                    .gap(Gap::Sm)
+                    .child(ui::text("Available resets").role("omp.usage.label"))
+                    .child(ui::text(count).role("omp.usage.pct")),
+            );
+            for (index, item) in resets.items.iter().take(3).enumerate() {
+                let expiry = item.expires_at.map_or_else(String::new, |at| {
+                    format!(" · expires {}", crate::model::usage::local_date(at))
+                });
+                let status = if item.status == "available" {
+                    ""
+                } else {
+                    item.status.as_str()
+                };
+                provider = provider.child(
+                    ui::text(format!(
+                        "{}{}{}",
+                        item.title,
+                        if status.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({status})")
+                        },
+                        expiry
+                    ))
+                    .key(format!("reset.{index}"))
+                    .role("omp.usage.reset"),
+                );
+            }
+            let more = resets
+                .available
+                .max(resets.items.len() as u64)
+                .saturating_sub(resets.items.len().min(3) as u64);
+            if more > 0 && !resets.items.is_empty() {
+                provider = provider.child(ui::text(format!("and {more} more")).key("reset.more"));
+            }
+        }
+        if report.windows.is_empty() && report.resets.is_none() && report.credits.is_none() {
             provider = provider.child(
                 ui::text(report.error.as_deref().unwrap_or("No limits reported yet"))
                     .key("empty")
@@ -133,15 +186,18 @@ pub fn render(model: &Model) -> Node<Msg> {
                 .role("omp.usage.provider.head"),
         );
         let completed = model.turn_summaries.len();
-        let turns =
-            completed + usize::from(matches!(model.turn, Turn::Running { .. }) && !report.fetching);
+        let turns = completed
+            + usize::from(
+                matches!(model.turn, Turn::Running { .. })
+                    && !(report.fetching && model.usage_command().is_some()),
+            );
         let duration: std::time::Duration = model
             .turn_summaries
             .values()
             .map(|turn| turn.duration)
             .sum();
         let active = if let Turn::Running { since, .. } = model.turn {
-            if report.fetching {
+            if report.fetching && model.usage_command().is_some() {
                 std::time::Duration::ZERO
             } else {
                 since.elapsed()
@@ -271,23 +327,6 @@ fn short_label(label: &str) -> String {
     })
 }
 
-/// `62372.8576375000` → `62,373 credits`; anything unparsable is shown as reported.
-fn credits_text(raw: &str) -> String {
-    let Ok(value) = raw.trim().parse::<f64>() else {
-        return format!("Credits: {raw}");
-    };
-    let whole = value.round() as u64;
-    let digits = whole.to_string();
-    let mut grouped = String::new();
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    format!("{grouped} credits")
-}
-
 #[cfg(test)]
 mod label_tests {
     use super::*;
@@ -299,7 +338,13 @@ mod label_tests {
         assert_eq!(short_label("Weekly · all models"), "Weekly");
         assert_eq!(short_label("5-hour limit"), "5-hour");
         assert_eq!(short_label("Weekly · Opus"), "Weekly · Opus");
-        assert_eq!(credits_text("62372.8576375000"), "62,373 credits");
-        assert_eq!(credits_text("unlimited"), "Credits: unlimited");
+        assert_eq!(
+            crate::model::usage::credits_text("62372.8576375000"),
+            "62,373 credits"
+        );
+        assert_eq!(
+            crate::model::usage::credits_text("unlimited"),
+            "Credits: unlimited"
+        );
     }
 }

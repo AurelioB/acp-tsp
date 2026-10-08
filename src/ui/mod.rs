@@ -8,6 +8,7 @@ pub mod elicit;
 mod ext;
 mod input;
 pub mod palette;
+mod pane;
 pub mod permission;
 pub mod prefs;
 #[cfg(feature = "unstable_llm_providers")]
@@ -51,8 +52,8 @@ pub struct UiOptions {
 /// How the UI ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum UiExit {
-    /// The user quit.
-    Quit,
+    /// The user quit; `resume` is the open session's id when the agent can reopen it.
+    Quit { resume: Option<String> },
     /// The terminal does not speak TSP (not Tern, `TERN_TSP=0`, a multiplexer).
     NoTern,
 }
@@ -137,6 +138,8 @@ fn run_with_controller(
     controller: Option<TermiosController>,
     on_connected: impl FnOnce(),
 ) -> anyhow::Result<UiExit> {
+    let term = pane::SharedTerm::new(term);
+    let mut signals = pane::PaneSignals::new(&term);
     let Some(mut session) = Session::<Msg>::with_terminal(
         term,
         Options::new()
@@ -167,6 +170,10 @@ fn run_with_controller(
     let mut picker = attach::AttachPicker::default();
     let mut focused_terminal: Option<TerminalId> = None;
     let mut settled_entries = std::collections::HashSet::new();
+    // The `--resume` picker shown before any session exists, and whether the user already
+    // asked for a session from it.
+    let mut startup_picker = false;
+    let mut opened_session = false;
     // Drain before the first frame too: startup notifications may already be queued.
     match events.drain() {
         Some(batch) => {
@@ -184,6 +191,10 @@ fn run_with_controller(
     if let Some(request) = model.oldest_elicitation() {
         form.init(request.id, &request.request);
     }
+    if std::mem::take(&mut model.pick_session) {
+        palette = Some(Palette::new(Kind::Sessions));
+        startup_picker = cmds.send(UiCmd::ListSessions { cursor: None }).is_ok();
+    }
     content::upload(&mut session, &mut model)?;
     session.render(
         sf,
@@ -198,6 +209,8 @@ fn run_with_controller(
         ),
     )?;
     settle_finished(&mut session, sf, &model, &mut settled_entries)?;
+    // After the `o`, so the program's title replaces the surface's.
+    signals.sync(&model)?;
     if let Some(request) = model.oldest_elicitation() {
         if let Some(id) = elicit::first_field(&request.request) {
             session.focus(sf, Some(&id))?;
@@ -215,7 +228,7 @@ fn run_with_controller(
         let composer_blocked = dialog_before
             || model.exited.is_some()
             || model.usage_report.open
-            || model.usage_report.fetching
+            || (model.usage_report.fetching && model.usage_command().is_some())
             || config_open
             || palette.as_ref().is_some_and(|p| p.kind != Kind::Commands);
         let action = match input {
@@ -225,7 +238,7 @@ fn run_with_controller(
                     tracing::debug!(name = %key.name, ctrl = key.ctrl, "key");
                 }
                 if usage_visible && key.is("escape") {
-                    model.usage_report.open = false;
+                    model.close_usage();
                     Action::Changed
                 } else if usage_visible && key.is("r") {
                     model.usage_report.pending = true;
@@ -234,7 +247,10 @@ fn run_with_controller(
                     model.usage_report.details = !model.usage_report.details;
                     Action::Changed
                 } else if usage_visible
-                    || (model.usage_report.fetching && !dialog_before && !key.is("escape"))
+                    || (model.usage_report.fetching
+                        && model.usage_command().is_some()
+                        && !dialog_before
+                        && !key.is("escape"))
                 {
                     Action::None
                 } else if (model.ext.goal_open || model.ext.account_details) && key.is("escape") {
@@ -413,7 +429,7 @@ fn run_with_controller(
                     Action::Changed
                 }
                 Msg::UsageClose if model.usage_report.open => {
-                    model.usage_report.open = false;
+                    model.close_usage();
                     Action::Changed
                 }
                 Msg::UsageTab(tab) if model.usage_report.open => {
@@ -739,6 +755,10 @@ fn run_with_controller(
         let mut changed = matches!(action, Action::Changed);
         match action {
             Action::Command(cmd) => {
+                opened_session |= matches!(
+                    cmd,
+                    UiCmd::NewSession | UiCmd::LoadSession(_) | UiCmd::ResumeSession(_)
+                );
                 // The ACP side answers silently; the dialog closes on the user's answer.
                 if let UiCmd::Permission { id, .. } | UiCmd::Elicitation { id, .. } = &cmd {
                     model.apply(crate::event::BridgeEvent::Resolved(*id));
@@ -837,7 +857,25 @@ fn run_with_controller(
         {
             session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
         }
-        if model.usage_report.pending && model.usage_command().is_none() {
+        if std::mem::take(&mut model.pick_session) {
+            palette = Some(Palette::new(Kind::Sessions));
+            startup_picker = true;
+            if cmds.send(UiCmd::ListSessions { cursor: None }).is_err() {
+                startup_picker = false;
+            }
+            changed = true;
+        } else if startup_picker
+            && palette
+                .as_ref()
+                .is_none_or(|open| open.kind != Kind::Sessions)
+        {
+            // Closed without a pick (a pick has already sent its own session command).
+            startup_picker = false;
+            if model.session.is_none() && !opened_session {
+                let _ = cmds.send(UiCmd::NewSession);
+            }
+        }
+        if model.usage_report.pending && model.usage_request().is_none() {
             model.usage_report.pending = false;
             model.usage_report.error =
                 Some("This agent does not offer a local usage command".into());
@@ -845,21 +883,14 @@ fn run_with_controller(
         }
         if model.usage_report.pending
             && !model.usage_report.fetching
-            && matches!(model.turn, crate::model::Turn::Idle)
-            && model.queued == 0
             && model.session.is_some()
             && model.exited.is_none()
-            && let Some(command) = model.usage_command()
+            && (model.usage_command().is_none()
+                || (matches!(model.turn, crate::model::Turn::Idle) && model.queued == 0))
         {
-            let command = command.to_owned();
             model.begin_usage();
-            if cmds
-                .send(UiCmd::Prompt(vec![
-                    agent_client_protocol::schema::v1::ContentBlock::Text(
-                        agent_client_protocol::schema::v1::TextContent::new(command),
-                    ),
-                ]))
-                .is_err()
+            if let Some(command) = model.usage_request()
+                && cmds.send(command).is_err()
             {
                 model.usage_report.fetching = false;
                 model.usage_report.error = Some("Agent controller unavailable".into());
@@ -884,6 +915,7 @@ fn run_with_controller(
                 ),
             )?;
             settle_finished(&mut session, sf, &model, &mut settled_entries)?;
+            signals.sync(&model)?;
             if form.id != elicitation_before
                 && let Some(request) = model.oldest_elicitation()
                 && let Some(id) = elicit::first_field(&request.request)
@@ -893,8 +925,15 @@ fn run_with_controller(
         }
     }
     let _ = cmds.send(UiCmd::Shutdown);
+    signals.clear()?;
     session.close()?;
-    Ok(UiExit::Quit)
+    Ok(UiExit::Quit {
+        resume: model
+            .session
+            .as_ref()
+            .filter(|_| model.can_reopen_sessions())
+            .map(|session| session.id.to_string()),
+    })
 }
 
 /// Let Tern move finished transcript rows out of the live diff set.

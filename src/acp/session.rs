@@ -118,6 +118,20 @@ pub(super) async fn run(
             selected = StartSession::New;
         }
     }
+    if selected == StartSession::Pick {
+        if caps.session_capabilities.list.is_some()
+            && (caps.load_session || caps.session_capabilities.resume.is_some())
+        {
+            // No session until the user picks one (or closes the picker for a new one).
+            events.send(BridgeEvent::PickSession);
+            selected = StartSession::Latest;
+        } else {
+            events.send(BridgeEvent::Error(
+                "This agent cannot list and reopen sessions; started a new one".into(),
+            ));
+            selected = StartSession::New;
+        }
+    }
     let (steer_tx, mut steer_rx) = mpsc::unbounded_channel::<(
         SessionId,
         Vec<ContentBlock>,
@@ -142,7 +156,7 @@ pub(super) async fn run(
                 StartSession::Load(_) if caps.load_session => SessionStartKind::Load,
                 StartSession::Load(_) => SessionStartKind::Resume,
                 StartSession::Resume(_) => SessionStartKind::Resume,
-                StartSession::Latest => unreachable!(),
+                StartSession::Latest | StartSession::Pick => unreachable!(),
             };
             if kind == SessionStartKind::Resume && caps.session_capabilities.resume.is_none() {
                 events.send(BridgeEvent::Error(
@@ -227,7 +241,7 @@ pub(super) async fn run(
                     .block_task()
                 )
                 .map(|s| (id.clone(), s.modes, s.config_options)),
-                StartSession::Latest => unreachable!(),
+                StartSession::Latest | StartSession::Pick => unreachable!(),
             };
             match setup {
                 Ok((id, new_modes, new_configs)) => {
@@ -560,6 +574,10 @@ pub(super) async fn run(
                         Ok(_) => refresh_providers(&cx, &events).await,
                         Err(err) => { events.send(BridgeEvent::Error(err.to_string())); }
                     } }
+                }
+                // The outer bridge consumes sidecar commands before they reach ACP.
+                Some(UiCmd::FetchCodexUsage { .. }) => {
+                    events.send(BridgeEvent::Error("Codex usage router unavailable".into()));
                 }
                 Some(UiCmd::Authenticate(_)) => { events.send(BridgeEvent::Error("Session is already authenticated".into())); }
                 Some(UiCmd::RetrySession) => { events.send(BridgeEvent::Error("Authentication is not requested".into())); }

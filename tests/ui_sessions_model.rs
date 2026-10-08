@@ -286,8 +286,7 @@ fn session_picker_load_resume_delete_and_page_cursor() {
 }
 
 #[test]
-fn hidden_usage_turn_captures_text_without_transcript_or_turn_totals() {
-    use agent_client_protocol::schema::v1::{PromptResponse, StopReason};
+fn codex_usage_requests_sidecar_without_a_prompt_turn() {
     let mut model = Model::default();
     model.apply(BridgeEvent::Initialized(Box::new(
         agent_client_protocol::schema::v1::InitializeResponse::new(
@@ -299,29 +298,40 @@ fn hidden_usage_turn_captures_text_without_transcript_or_turn_totals() {
         )),
     )));
     start(&mut model);
-    model.apply(BridgeEvent::Update(Box::new(
-        SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
-            AvailableCommand::new("status", "Show status"),
-        ])),
-    )));
+    model.submitted("real prompt".into());
     model.begin_usage();
-    model.apply(BridgeEvent::Update(Box::new(
-        SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
-            "/status",
-        )))),
-    )));
-    model.apply(BridgeEvent::Update(Box::new(
-        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
-            "**5h limit:** 92% left (resets 14:00)",
-        )))),
-    )));
-    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
-        StopReason::EndTurn,
-    )))));
-    assert!(model.transcript.is_empty());
+    let generation = match model.usage_request() {
+        Some(UiCmd::FetchCodexUsage { generation }) => generation,
+        other => panic!("expected independent sidecar command, got {other:?}"),
+    };
+    assert!(matches!(model.turn, acp_tsp::model::Turn::Running { .. }));
+    let fixture = serde_json::from_str(include_str!("fixtures/codex/rate_limits.json")).unwrap();
+    let report = acp_tsp::model::usage::parse_codex(fixture).unwrap();
+    model.apply(BridgeEvent::CodexUsage {
+        generation,
+        result: Ok(report),
+    });
+    assert_eq!(model.usage_report.windows.len(), 2);
+    assert_eq!(model.usage_report.resets.as_ref().unwrap().available, 3);
+    assert!(!model.usage_report.fetching);
+    assert_eq!(model.transcript.len(), 1); // Only the real user prompt.
     assert!(model.turn_summaries.is_empty());
-    assert_eq!(model.usage_report.windows[0].used_pct, 8.0);
-    assert!(matches!(model.turn, acp_tsp::model::Turn::Idle));
+    model.usage_report.open = true;
+    model.begin_usage();
+    model.close_usage();
+    let stale = model.usage_report.generation.wrapping_sub(1);
+    model.apply(BridgeEvent::CodexUsage {
+        generation: stale,
+        result: Err("stale".into()),
+    });
+    model.usage_report.open = true;
+    model.begin_usage();
+    model.apply(BridgeEvent::CodexUsage {
+        generation: stale,
+        result: Err("still stale".into()),
+    });
+    assert!(model.usage_report.fetching);
+    assert!(model.usage_report.error.is_none());
 }
 
 #[test]
@@ -387,10 +397,10 @@ fn usage_query_only_uses_a_command_the_agent_advertises() {
         model_for("@agentclientprotocol/claude-agent-acp", &["usage"]).usage_command(),
         Some("/usage")
     );
-    assert_eq!(
-        model_for("@agentclientprotocol/codex-acp", &["status", "review"]).usage_command(),
-        Some("/status")
-    );
+    assert!(matches!(
+        model_for("@agentclientprotocol/codex-acp", &[]).usage_request(),
+        Some(UiCmd::FetchCodexUsage { .. })
+    ));
     // Another agent's `/usage` may be a model prompt, so it is never sent hidden.
     assert_eq!(
         model_for("other-agent", &["status", "usage"]).usage_command(),

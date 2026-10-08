@@ -32,12 +32,10 @@ struct Cli {
     /// Session working directory.
     #[arg(long, global = true)]
     cwd: Option<PathBuf>,
-    /// Load a session (replays history when supported).
-    #[arg(long, global = true, group = "session_start")]
-    load: Option<String>,
-    /// Resume a session without replay.
-    #[arg(long, global = true, group = "session_start")]
-    resume: Option<String>,
+    /// Resume a session by id, showing its history when the agent can replay it; without an
+    /// id, pick one of this directory's sessions.
+    #[arg(long, global = true, group = "session_start", num_args = 0..=1, value_name = "ID")]
+    resume: Option<Option<String>>,
     /// Continue the most recently updated session in this directory.
     #[arg(long = "continue", global = true, group = "session_start")]
     continue_session: bool,
@@ -151,11 +149,13 @@ fn run_session(cli: Cli) -> anyhow::Result<()> {
             env: Default::default(),
         }
     };
+    let resume_command = resume_command(&cli);
     let mut options = SessionOptions::new(cwd.clone());
-    options.start = match (cli.load, cli.resume, cli.continue_session) {
-        (Some(id), None, false) => StartSession::Load(id.into()),
-        (None, Some(id), false) => StartSession::Resume(id.into()),
-        (None, None, true) => StartSession::Latest,
+    options.start = match (&cli.resume, cli.continue_session) {
+        // `session/load` replays the history; it falls back to `session/resume`.
+        (Some(Some(id)), false) => StartSession::Load(id.clone().into()),
+        (Some(None), false) => StartSession::Pick,
+        (None, true) => StartSession::Latest,
         _ => StartSession::New,
     };
     options.additional_dirs = cli
@@ -202,13 +202,60 @@ fn run_session(cli: Cli) -> anyhow::Result<()> {
     }
     runtime.shutdown_timeout(Duration::from_secs(2));
     match ui_result? {
-        ui::UiExit::Quit => Ok(()),
+        ui::UiExit::Quit { resume } => {
+            if let Some(id) = resume {
+                eprintln!("Resume this session: {}", resume_command(&id));
+            }
+            Ok(())
+        }
         ui::UiExit::NoTern => {
             eprintln!(
                 "acp-tsp needs Tern (a terminal that speaks TSP). Run it in a Tern agent block; check TERN_TSP is not disabled."
             );
             std::process::exit(2)
         }
+    }
+}
+
+/// The command line that reopens a session: this invocation's agent, directory and roots
+/// with `--resume <id>`.
+fn resume_command(cli: &Cli) -> impl Fn(&str) -> String + use<> {
+    let mut words = vec!["acp-tsp".to_owned()];
+    if let Some(agent) = &cli.agent {
+        words.extend(["--agent".to_owned(), agent.clone()]);
+    }
+    if let Some(cwd) = &cli.cwd {
+        words.extend(["--cwd".to_owned(), cwd.display().to_string()]);
+    }
+    for dir in &cli.add_dirs {
+        words.extend(["--add-dir".to_owned(), dir.display().to_string()]);
+    }
+    let command = cli.command.clone();
+    move |id: &str| {
+        let mut words = words.clone();
+        words.extend(["--resume".to_owned(), id.to_owned()]);
+        if !command.is_empty() {
+            words.push("--".to_owned());
+            words.extend(command.iter().cloned());
+        }
+        words
+            .iter()
+            .map(|word| shell_quote(word))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// POSIX shell quoting, only where a word needs it.
+fn shell_quote(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
+    {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
     }
 }
 
@@ -351,21 +398,20 @@ mod tests {
 
     #[test]
     fn session_start_flags_are_mutually_exclusive() {
-        for pair in [
-            ["--load", "one", "--resume", "two"],
-            ["--load", "one", "--continue", ""],
-            ["--resume", "one", "--continue", ""],
-        ] {
-            let args = std::iter::once("acp-tsp")
-                .chain(pair.into_iter().filter(|value| !value.is_empty()));
-            assert!(Cli::try_parse_from(args).is_err());
-        }
+        assert!(Cli::try_parse_from(["acp-tsp", "--resume", "one", "--continue"]).is_err());
+        assert!(Cli::try_parse_from(["acp-tsp", "--resume", "--continue"]).is_err());
         assert_eq!(
-            Cli::try_parse_from(["acp-tsp", "--load", "s"])
+            Cli::try_parse_from(["acp-tsp", "--resume", "s"])
                 .unwrap()
-                .load
-                .as_deref(),
-            Some("s")
+                .resume,
+            Some(Some("s".into()))
+        );
+        // Without an id (even before another flag) it opens the session picker.
+        assert_eq!(
+            Cli::try_parse_from(["acp-tsp", "--resume", "--agent", "codex"])
+                .unwrap()
+                .resume,
+            Some(None)
         );
         assert!(
             Cli::try_parse_from(["acp-tsp", "--continue"])
@@ -373,6 +419,28 @@ mod tests {
                 .continue_session
         );
     }
+    #[test]
+    fn resume_hint_repeats_the_agent_and_quotes_what_needs_it() {
+        let cli = Cli::try_parse_from([
+            "acp-tsp",
+            "--agent",
+            "codex",
+            "--cwd",
+            "/tmp/my project",
+            "--continue",
+        ])
+        .unwrap();
+        assert_eq!(
+            resume_command(&cli)("019a-it's"),
+            "acp-tsp --agent codex --cwd '/tmp/my project' --resume '019a-it'\\''s'"
+        );
+        let raw = Cli::try_parse_from(["acp-tsp", "--", "my-agent", "--acp"]).unwrap();
+        assert_eq!(
+            resume_command(&raw)("s1"),
+            "acp-tsp --resume s1 -- my-agent --acp"
+        );
+    }
+
     #[test]
     fn agent_update_accepts_optional_agent_name() {
         assert!(Cli::try_parse_from(["acp-tsp", "agents", "update", "agy", "--write"]).is_ok());

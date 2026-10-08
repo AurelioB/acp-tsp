@@ -109,7 +109,7 @@ fn scripted_handshake_prompt_and_agent_frame() {
             || {}
         )
         .unwrap(),
-        UiExit::Quit
+        UiExit::Quit { resume: None }
     );
     let UiCmd::Prompt(blocks) = cmd_rx.try_recv().unwrap() else {
         panic!("expected prompt")
@@ -153,7 +153,7 @@ fn closed_agent_stays_visible_until_ctrl_d() {
             || {}
         )
         .unwrap(),
-        UiExit::Quit
+        UiExit::Quit { resume: None }
     );
     let output = String::from_utf8(pipes.borrow().output.clone()).unwrap();
     assert!(output.contains("Agent connection closed"));
@@ -211,4 +211,44 @@ fn answering_a_permission_closes_its_dialog() {
     );
     // Reaching Ctrl+D at all means a frame deleted the dialog layer.
     assert!(matches!(cmd_rx.try_recv().unwrap(), UiCmd::Shutdown));
+}
+
+#[test]
+fn resume_without_an_id_lists_sessions_and_closing_the_picker_starts_a_new_one() {
+    let pipes = Rc::new(RefCell::new(Pipes {
+        // Escape closes the picker; Ctrl+D then quits.
+        first_input: Some(b"\x1b[27u\x04".to_vec()),
+        ..Pipes::default()
+    }));
+    let (waker, _wake) = wake_pair().unwrap();
+    let (tx, rx) = event_channel(waker);
+    tx.send(BridgeEvent::PickSession);
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    run_with_terminal(
+        Script(pipes.clone()),
+        UiOptions {
+            agent: "Codex".into(),
+            cwd: std::env::temp_dir(),
+            launch: AgentLaunch {
+                name: "Codex".into(),
+                command: "true".into(),
+                args: vec![],
+                env: Default::default(),
+            },
+        },
+        rx,
+        cmd_tx,
+        || {},
+    )
+    .unwrap();
+    let mut sent = Vec::new();
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        sent.push(cmd);
+    }
+    assert!(
+        matches!(sent[0], UiCmd::ListSessions { cursor: None }),
+        "{sent:?}"
+    );
+    assert!(matches!(sent[1], UiCmd::NewSession), "{sent:?}");
+    assert!(matches!(sent[2], UiCmd::Shutdown), "{sent:?}");
 }

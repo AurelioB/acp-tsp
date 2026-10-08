@@ -1,0 +1,23 @@
+{
+  "ordinaryUsageAllowed": true,
+  "accountId": "fake-account-never-show",
+  "rateLimits": {
+    "limitId": "codex",
+    "limitName": "Codex",
+    "primary": {"usedPercent": 44, "windowDurationMins": 300, "resetsAt": 1791500000},
+    "secondary": {"usedPercent": 9, "windowDurationMins": 10080, "resetsAt": 1792000000},
+    "credits": {"hasCredits": true, "unlimited": false, "balance": "62372.8576375000"},
+    "planType": "pro",
+    "spendControlReached": false,
+    "rateLimitReachedType": null
+  },
+  "rateLimitsByLimitId": null,
+  "rateLimitResetCredits": {
+    "availableCount": 3,
+    "credits": [
+      {"id": "fake-credit-one-never-show", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1791000000, "expiresAt": 1793000000, "title": "Extra usage reset", "description": null},
+      {"id": "fake-credit-two-never-show", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1791000000, "expiresAt": null, "title": "One-time reset", "description": null}
+    ]
+  },
+  "rateLimitUpsell": null
+}
