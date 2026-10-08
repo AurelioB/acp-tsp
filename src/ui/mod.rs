@@ -26,7 +26,7 @@ use agent_client_protocol::schema::v1::{
 use tern_sdk::{
     Input, Options, Session, SurfaceOptions,
     term::Terminal,
-    wire::{self, Event},
+    wire::{self, Event, RevealAt, ScrollBy},
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -37,6 +37,11 @@ use crate::model::Model;
 use composer::Composer;
 use input::{Action, InputState};
 use palette::{Choice, Kind, Palette};
+
+/// Whether the connected terminal can render a TSP element kind.
+pub(crate) fn supports(caps: &tern_sdk::Capabilities, kind: &str) -> bool {
+    caps.has_kind(kind)
+}
 
 /// What the UI needs to start.
 #[derive(Clone, Debug)]
@@ -62,6 +67,8 @@ pub enum UiExit {
 pub enum Msg {
     Send(String),
     Edit(wire::Edit),
+    EditPrompt(u64),
+    ToggleFold(String, bool),
     Undo,
     Focus,
     Submit,
@@ -115,7 +122,15 @@ pub fn run(
 ) -> anyhow::Result<UiExit> {
     let term = WakeTerm::open(wake)?;
     let controller = term.termios_controller();
-    run_with_controller(term, options, events, cmds, Some(controller), on_connected)
+    run_with_controller(
+        term,
+        options,
+        events,
+        cmds,
+        Some(controller),
+        on_connected,
+        stop_job,
+    )
 }
 
 /// Same session loop with an injectable terminal for scripted tests.
@@ -127,7 +142,25 @@ pub fn run_with_terminal(
     cmds: UnboundedSender<UiCmd>,
     on_connected: impl FnOnce(),
 ) -> anyhow::Result<UiExit> {
-    run_with_controller(term, options, events, cmds, None, on_connected)
+    run_with_controller(term, options, events, cmds, None, on_connected, stop_job)
+}
+/// Scripted session with an injectable job-control stop instead of a real signal.
+#[doc(hidden)]
+pub fn run_with_terminal_stop(
+    term: impl Terminal + 'static,
+    options: UiOptions,
+    events: EventRx,
+    cmds: UnboundedSender<UiCmd>,
+    on_connected: impl FnOnce(),
+    stop: impl Fn() -> std::io::Result<()>,
+) -> anyhow::Result<UiExit> {
+    run_with_controller(term, options, events, cmds, None, on_connected, stop)
+}
+
+fn stop_job() -> std::io::Result<()> {
+    // The adapter subprocesses share our foreground process group; stop them with us.
+    rustix::process::kill_current_process_group(rustix::process::Signal::TSTP)
+        .map_err(std::io::Error::from)
 }
 
 fn run_with_controller(
@@ -137,6 +170,7 @@ fn run_with_controller(
     cmds: UnboundedSender<UiCmd>,
     controller: Option<TermiosController>,
     on_connected: impl FnOnce(),
+    stop: impl Fn() -> std::io::Result<()>,
 ) -> anyhow::Result<UiExit> {
     let term = pane::SharedTerm::new(term);
     let mut signals = pane::PaneSignals::new(&term);
@@ -147,19 +181,17 @@ fn run_with_controller(
             .version(env!("CARGO_PKG_VERSION"))
             .feature(wire::feature::EDIT)
             .feature(wire::feature::UNDO)
-            .feature(wire::feature::SEND),
+            .feature(wire::feature::SEND)
+            .feature(wire::feature::SCROLL),
     )?
     else {
         return Ok(UiExit::NoTern);
     };
-    let sf = session.open(
-        SurfaceOptions::inline()
-            .title(options.agent.clone())
-            .role("omp.session"),
-    )?;
+    let mut sf = session.open(surface_options(&options))?;
     session.palette(sf, theme::palette())?;
     on_connected();
     let mut model = Model::default();
+    let mut usage_history = crate::usage_history::Recorder::new();
     model.launch_name = options.agent.clone();
     let mut composer = Composer::default();
     let mut input_state = InputState::default();
@@ -170,6 +202,9 @@ fn run_with_controller(
     let mut picker = attach::AttachPicker::default();
     let mut focused_terminal: Option<TerminalId> = None;
     let mut settled_entries = std::collections::HashSet::new();
+    let mut prompt_cursor: Option<usize> = None;
+    let mut gone_retried = false;
+    let mut awaiting_adopt = false;
     // The `--resume` picker shown before any session exists, and whether the user already
     // asked for a session from it.
     let mut startup_picker = false;
@@ -211,6 +246,7 @@ fn run_with_controller(
     settle_finished(&mut session, sf, &model, &mut settled_entries)?;
     // After the `o`, so the program's title replaces the surface's.
     signals.sync(&model)?;
+    usage_history.record(&model);
     if let Some(request) = model.oldest_elicitation() {
         if let Some(id) = elicit::first_field(&request.request) {
             session.focus(sf, Some(&id))?;
@@ -219,6 +255,11 @@ fn run_with_controller(
         session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
     }
     while let Some(input) = session.next(None)? {
+        if !matches!(&input, Input::Event(Event::Gone(_))) {
+            gone_retried = false;
+            awaiting_adopt = false;
+        }
+        let mut restore_focus = false;
         let elicitation_before = form.id;
         let dialog_before = model.dialogs.front().is_some()
             || model.auth.is_some()
@@ -237,10 +278,91 @@ fn run_with_controller(
                 if key.typed().is_none() {
                     tracing::debug!(name = %key.name, ctrl = key.ctrl, "key");
                 }
-                if usage_visible && key.is("escape") {
+                let scroll_by = if key.is("page_up") {
+                    Some(ScrollBy::PageUp)
+                } else if key.is("page_down") {
+                    Some(ScrollBy::PageDown)
+                } else if key.is("home") {
+                    Some(ScrollBy::Start)
+                } else if key.is("end") {
+                    Some(ScrollBy::End)
+                } else {
+                    None
+                };
+                if key.is("ctrl+z")
+                    && !dialog_before
+                    && !picker.open
+                    && !config_open
+                    && palette.is_none()
+                    && !usage_visible
+                {
+                    let id = session.surface_id(sf).to_owned();
+                    if session.is_open(sf) {
+                        session.close_surface(sf, true)?;
+                    }
+                    // Cooked mode lets the shell take control while the whole foreground job,
+                    // including ACP adapters in our process group, is stopped.
+                    let stopped = if let Some(controller) = controller.as_ref() {
+                        controller.with_cooked(&stop)
+                    } else {
+                        stop()
+                    };
+                    if let Err(error) = stopped {
+                        model.errors.push(format!("Could not suspend job: {error}"));
+                    }
+                    match session.open(surface_options(&options).id(id).adopt(true)) {
+                        Ok(reopened) => {
+                            sf = reopened;
+                            awaiting_adopt = true;
+                            session.palette(sf, theme::palette())?;
+                            content::reset_uploads(&mut model);
+                            settled_entries.clear();
+                            restore_focus = true;
+                            Action::Changed
+                        }
+                        Err(_) => Action::Quit,
+                    }
+                } else if let Some(by) = scroll_by
+                    && let Some(id) = scroll_target(
+                        ScrollContext {
+                            model: &model,
+                            palette: &palette,
+                            config_open,
+                            picker_open: picker.open,
+                            focused_terminal: focused_terminal.as_ref(),
+                            usage_visible,
+                            dialog_open: dialog_before,
+                            composer_empty: composer.text.is_empty(),
+                        },
+                        by,
+                    )
+                    && session.is_open(sf)
+                {
+                    session.scroll(sf, &id, by)?;
+                    Action::None
+                } else if scroll_by
+                    .is_some_and(|by| matches!(by, ScrollBy::PageUp | ScrollBy::PageDown))
+                    && !dialog_before
+                    && !picker.open
+                    && !config_open
+                    && palette.is_none()
+                    && !usage_visible
+                    && model.exited.is_none()
+                    && session.is_open(sf)
+                {
+                    reveal_prompt(
+                        &mut session,
+                        sf,
+                        &model,
+                        &mut prompt_cursor,
+                        key.is("page_up"),
+                    )?;
+                    Action::None
+                } else if usage_visible && key.is("escape") {
                     model.close_usage();
                     Action::Changed
                 } else if usage_visible && key.is("r") {
+                    crate::usage_history::refresh(&mut model.usage_report);
                     model.usage_report.pending = true;
                     Action::Changed
                 } else if usage_visible && key.is("tab") {
@@ -295,7 +417,7 @@ fn run_with_controller(
                                 let typing = form.focus.is_some();
                                 let changed =
                                     form.text_key(schema, &key) || form.option_key(schema, &key);
-                                if typing && form.focus.is_none() {
+                                if typing && form.focus.is_none() && session.is_open(sf) {
                                     session.focus(sf, None)?;
                                 }
                                 changed
@@ -425,6 +547,7 @@ fn run_with_controller(
                 }
                 Msg::UsageOpen => Action::OpenUsage,
                 Msg::UsageRefresh if model.usage_report.open => {
+                    crate::usage_history::refresh(&mut model.usage_report);
                     model.usage_report.pending = true;
                     Action::Changed
                 }
@@ -479,6 +602,40 @@ fn run_with_controller(
                         Action::None
                     }
                 }
+                Msg::EditPrompt(id) if !composer_blocked => {
+                    if let Some(text) = model.transcript.iter().find_map(|entry| {
+                        (entry.id == id).then_some(&entry.kind).and_then(|kind| {
+                            if let crate::model::EntryKind::User { text, .. } = kind {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                    }) {
+                        composer.replace(text);
+                        focused_terminal = None;
+                        palette = None;
+                        picker.open = false;
+                        if session.is_open(sf) {
+                            session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
+                        }
+                        Action::Changed
+                    } else {
+                        Action::None
+                    }
+                }
+                Msg::ToggleFold(key, collapsed) => {
+                    let id = key
+                        .strip_prefix("entry.")
+                        .and_then(|tail| tail.split('.').next())
+                        .and_then(|id| id.parse::<u64>().ok());
+                    if id.is_some_and(|id| model.transcript.iter().any(|entry| entry.id == id)) {
+                        model.folds.insert(key, collapsed);
+                        Action::Changed
+                    } else {
+                        Action::None
+                    }
+                }
                 Msg::Undo if !composer_blocked => {
                     if composer.undo() {
                         Action::Changed
@@ -488,10 +645,14 @@ fn run_with_controller(
                 }
                 Msg::Focus if !composer_blocked => {
                     focused_terminal = None;
-                    session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
+                    if session.is_open(sf) {
+                        session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
+                    }
                     Action::None
                 }
-                Msg::Send(_) | Msg::Edit(_) | Msg::Undo | Msg::Focus => Action::None,
+                Msg::Send(_) | Msg::Edit(_) | Msg::EditPrompt(_) | Msg::Undo | Msg::Focus => {
+                    Action::None
+                }
                 Msg::AttachSelect(path) if picker.open => {
                     let path = path.strip_prefix("layer.complete.0.list.").unwrap_or(&path);
                     if picker
@@ -545,10 +706,12 @@ fn run_with_controller(
                 Msg::ElicitFocus(field) => {
                     if model.oldest_elicitation().is_some() {
                         form.focus_field(&field);
-                        session.focus(
-                            sf,
-                            Some(&format!("layer.elicitation.form.{field}.field.{field}")),
-                        )?;
+                        if session.is_open(sf) {
+                            session.focus(
+                                sf,
+                                Some(&format!("layer.elicitation.form.{field}.field.{field}")),
+                            )?;
+                        }
                         Action::Changed
                     } else {
                         Action::None
@@ -748,8 +911,30 @@ fn run_with_controller(
             Input::Event(Event::Gone(gone))
                 if gone.ids.iter().any(|id| id == session.surface_id(sf)) =>
             {
-                tracing::warn!("TSP surface gone");
-                Action::Quit
+                if gone_retried {
+                    tracing::warn!("TSP reopened surface is gone again");
+                    Action::Quit
+                } else {
+                    gone_retried = true;
+                    tracing::warn!(adopt = awaiting_adopt, "TSP surface gone; reopening");
+                    match session
+                        .open(surface_options(&options).id(session.surface_id(sf).to_owned()))
+                    {
+                        Ok(reopened) => {
+                            sf = reopened;
+                            if session.palette(sf, theme::palette()).is_err() {
+                                Action::Quit
+                            } else {
+                                content::reset_uploads(&mut model);
+                                settled_entries.clear();
+                                restore_focus = true;
+                                awaiting_adopt = false;
+                                Action::Changed
+                            }
+                        }
+                        Err(_) => Action::Quit,
+                    }
+                }
             }
             Input::Event(Event::Gone(gone)) => {
                 tracing::debug!(nodes = gone.ids.len(), "Tern evicted settled rows");
@@ -763,6 +948,9 @@ fn run_with_controller(
         let mut changed = matches!(action, Action::Changed);
         match action {
             Action::Command(cmd) => {
+                if matches!(cmd, UiCmd::Prompt(_) | UiCmd::Steer(_)) {
+                    prompt_cursor = None;
+                }
                 opened_session |= matches!(
                     cmd,
                     UiCmd::NewSession | UiCmd::LoadSession(_) | UiCmd::ResumeSession(_)
@@ -786,6 +974,7 @@ fn run_with_controller(
             }
             Action::OpenUsage => {
                 palette = None;
+                crate::usage_history::refresh(&mut model.usage_report);
                 config_open = false;
                 model.usage_report.open = true;
                 model.usage_report.details = false;
@@ -861,7 +1050,11 @@ fn run_with_controller(
         } else {
             form = elicit::FormState::default();
         }
-        if dialog_before && model.dialogs.front().is_none() && model.auth.is_none() && !picker.open
+        if session.is_open(sf)
+            && dialog_before
+            && model.dialogs.front().is_none()
+            && model.auth.is_none()
+            && !picker.open
         {
             session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
         }
@@ -908,7 +1101,15 @@ fn run_with_controller(
             }
             changed = true;
         }
-        if changed {
+        if !supports(session.caps(), "prefs")
+            && settings_open(&mut model, &mut config_open, &mut palette)
+        {
+            model
+                .notices
+                .push("This Tern version cannot show settings sheets".into());
+            changed = true;
+        }
+        if changed && session.is_open(sf) {
             content::upload(&mut session, &mut model)?;
             session.render(
                 sf,
@@ -924,11 +1125,61 @@ fn run_with_controller(
             )?;
             settle_finished(&mut session, sf, &model, &mut settled_entries)?;
             signals.sync(&model)?;
-            if form.id != elicitation_before
-                && let Some(request) = model.oldest_elicitation()
-                && let Some(id) = elicit::first_field(&request.request)
-            {
-                session.focus(sf, Some(&id))?;
+            usage_history.record(&model);
+            if restore_focus || form.id != elicitation_before {
+                if let Some(request) = model.oldest_elicitation()
+                    && let Some(id) = elicit::first_field(&request.request)
+                {
+                    session.focus(sf, Some(&id))?;
+                } else if restore_focus && model.ext.goal_open {
+                    session.focus(sf, Some("layer.goal"))?;
+                } else if restore_focus && model.ext.account_details {
+                    session.focus(sf, Some("layer.account.details"))?;
+                } else if restore_focus && picker.open {
+                    session.focus(sf, Some("layer.complete.0.list"))?;
+                } else if restore_focus && model.usage_report.open {
+                    session.focus(sf, Some("layer.usage.body.head.tabs"))?;
+                } else if restore_focus && config_open {
+                    session.focus(sf, Some("layer.config"))?;
+                } else if restore_focus && let Some(active) = palette.as_ref() {
+                    #[cfg(feature = "unstable_llm_providers")]
+                    let target = if active.provider_editor.is_some() {
+                        "layer.provider"
+                    } else if active.kind == Kind::Commands {
+                        "layer.complete.0.list"
+                    } else {
+                        "layer.palette"
+                    };
+                    #[cfg(not(feature = "unstable_llm_providers"))]
+                    let target = if active.kind == Kind::Commands {
+                        "layer.complete.0.list"
+                    } else {
+                        "layer.palette"
+                    };
+                    session.focus(sf, Some(target))?;
+                } else if restore_focus
+                    && let Some(terminal) = focused_terminal.as_ref()
+                    && let Some(output) = scroll_target(
+                        ScrollContext {
+                            model: &model,
+                            palette: &palette,
+                            config_open,
+                            picker_open: picker.open,
+                            focused_terminal: Some(terminal),
+                            usage_visible: false,
+                            dialog_open: false,
+                            composer_empty: composer.text.is_empty(),
+                        },
+                        ScrollBy::PageUp,
+                    )
+                    && let Some(card) = output.strip_suffix(".output")
+                {
+                    session.focus(sf, Some(card))?;
+                } else if restore_focus && model.dialogs.front().is_some() {
+                    session.focus(sf, None)?;
+                } else {
+                    session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
+                }
             }
         }
     }
@@ -971,6 +1222,121 @@ fn settle_finished(
     }
     Ok(())
 }
+fn surface_options(options: &UiOptions) -> SurfaceOptions {
+    SurfaceOptions::inline()
+        .title(options.agent.clone())
+        .role("omp.session")
+}
+
+fn settings_open(model: &mut Model, config_open: &mut bool, palette: &mut Option<Palette>) -> bool {
+    let open = std::mem::take(config_open) | std::mem::take(&mut model.ext.goal_open);
+    #[cfg(feature = "unstable_llm_providers")]
+    if let Some(picker) = palette.as_mut() {
+        return open | picker.provider_editor.take().is_some();
+    }
+    #[cfg(not(feature = "unstable_llm_providers"))]
+    let _ = palette;
+    open
+}
+
+struct ScrollContext<'a> {
+    model: &'a Model,
+    palette: &'a Option<Palette>,
+    config_open: bool,
+    picker_open: bool,
+    focused_terminal: Option<&'a TerminalId>,
+    usage_visible: bool,
+    dialog_open: bool,
+    composer_empty: bool,
+}
+
+fn scroll_target(context: ScrollContext<'_>, by: ScrollBy) -> Option<String> {
+    if context.dialog_open {
+        return None;
+    }
+    if context.usage_visible {
+        return context
+            .model
+            .usage_report
+            .details
+            .then(|| "layer.usage.body.raw".into());
+    }
+    if context.picker_open {
+        return matches!(by, ScrollBy::PageUp | ScrollBy::PageDown)
+            .then(|| "layer.complete.0.list".into());
+    }
+    if let Some(palette) = context.palette {
+        if !matches!(by, ScrollBy::PageUp | ScrollBy::PageDown) {
+            return None; // Home/End edit the picker query (or command composer).
+        }
+        #[cfg(feature = "unstable_llm_providers")]
+        if palette.provider_editor.is_some() {
+            return Some("layer.provider".into());
+        }
+        return Some(
+            if palette.kind == Kind::Commands {
+                "layer.complete.0.list"
+            } else {
+                "layer.palette"
+            }
+            .into(),
+        );
+    }
+    if context.config_open {
+        return matches!(by, ScrollBy::PageUp | ScrollBy::PageDown).then(|| "layer.config".into());
+    }
+    let id = context.focused_terminal?;
+    if !context.composer_empty {
+        return None; // Home/End belong to the editor while text is present.
+    }
+    for entry in context.model.transcript.iter().rev() {
+        let crate::model::EntryKind::Tool { call, .. } = &entry.kind else {
+            continue;
+        };
+        for (index, content) in call.content.iter().enumerate() {
+            if let agent_client_protocol::schema::v1::ToolCallContent::Terminal(terminal) = content
+                && terminal.terminal_id == *id
+            {
+                return Some(format!("main.entry.{}.{index}.output", entry.id));
+            }
+        }
+    }
+    None
+}
+
+fn reveal_prompt(
+    session: &mut Session<Msg>,
+    sf: tern_sdk::Surface,
+    model: &Model,
+    cursor: &mut Option<usize>,
+    previous: bool,
+) -> anyhow::Result<()> {
+    let prompts = || {
+        model
+            .transcript
+            .iter()
+            .filter(|entry| matches!(entry.kind, crate::model::EntryKind::User { .. }))
+    };
+    if previous {
+        let index = cursor
+            .unwrap_or_else(|| prompts().count())
+            .saturating_sub(1);
+        if let Some(entry) = prompts().nth(index) {
+            session.reveal(sf, &format!("main.entry.{}", entry.id), RevealAt::Start)?;
+            *cursor = Some(index);
+        }
+    } else if let Some(index) = *cursor
+        && let Some(entry) = prompts().nth(index + 1)
+    {
+        session.reveal(sf, &format!("main.entry.{}", entry.id), RevealAt::Start)?;
+        *cursor = Some(index + 1);
+    } else if let Some(entry) = model.transcript.last() {
+        // Tern currently treats `end` as `nearest`; reveal at the viewport edge.
+        session.reveal(sf, &format!("main.entry.{}", entry.id), RevealAt::Nearest)?;
+        *cursor = None;
+    }
+    Ok(())
+}
 
 fn screen(
     model: &Model,
@@ -989,7 +1355,7 @@ fn screen(
         && !model.ext.goal_open
     {
         if model.usage_report.open {
-            view = view.layer(usage::render(model));
+            view = view.layer(usage::render(model, caps));
         } else if let Some(palette) = palette {
             view = view.layer(view::layer(palette.render(model)));
         } else if config_open {

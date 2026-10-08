@@ -40,7 +40,7 @@ pub fn view(model: &Model, composer: &Composer, caps: &Capabilities) -> View<Msg
 pub fn view_with(
     model: &Model,
     composer: &Composer,
-    _caps: &Capabilities,
+    caps: &Capabilities,
     form: &super::elicit::FormState,
     picker: Option<&super::attach::AttachPicker>,
 ) -> View<Msg> {
@@ -51,11 +51,14 @@ pub fn view_with(
     main = main.child(ui::spacer().key("welcome.after").size(Gap::Sm));
     for entry in &model.transcript {
         let key = format!("entry.{}", entry.id);
+        let scope = key.clone();
         let node: Node<Msg> = match &entry.kind {
             EntryKind::User { blocks, .. } => ui::card()
                 .key(key)
                 .role("omp.user")
                 .tone("user")
+                .actions(ui::Actions::new().menu("copy").menu("edit"))
+                .on_menu("edit", Msg::EditPrompt(entry.id))
                 .child(
                     ui::row()
                         .key("tools")
@@ -79,24 +82,43 @@ pub fn view_with(
                             ),
                         ),
                 )
-                .children(super::content::user_blocks(blocks, model))
+                .children(super::content::user_blocks(
+                    blocks, model, caps, &scope, entry.id,
+                ))
                 .into(),
             EntryKind::Steering { blocks } => ui::card()
                 .key(key)
                 .role("omp.user.synthetic")
                 .tone("muted")
                 .head("Steering")
-                .children(super::content::blocks(blocks, "body", model))
+                .children(super::content::blocks(blocks, "body", model, caps, &scope))
                 .into(),
             EntryKind::Agent { blocks, .. } => {
                 let mut col = ui::col().key(key).role("omp.assistant");
                 for (i, block) in blocks.iter().enumerate() {
                     let body: Node<Msg> = match block {
-                        ContentBlock::Text(text) => ui::md(text.text.clone())
-                            .key(format!("body.{i}"))
-                            .stream(model.is_streaming(entry))
-                            .into(),
-                        _ => super::content::block(block, format!("body.{i}"), model),
+                        ContentBlock::Text(text) => {
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text.text)
+                                && (value.is_object() || value.is_array())
+                                && (super::supports(caps, "tree") || super::supports(caps, "table"))
+                            {
+                                super::content::json_display(
+                                    &value,
+                                    &text.text,
+                                    &format!("body.{i}"),
+                                    model,
+                                    caps,
+                                    &scope,
+                                )
+                            } else {
+                                ui::md(text.text.clone())
+                                    .key(format!("body.{i}"))
+                                    .stream(model.is_streaming(entry))
+                                    .actions(super::content::copy_menu())
+                                    .into()
+                            }
+                        }
+                        _ => super::content::block(block, format!("body.{i}"), model, caps, &scope),
                     };
                     col = col.child(body);
                 }
@@ -142,6 +164,7 @@ pub fn view_with(
                         .key("head")
                         .into()
                 };
+                let fold_key = scope.clone();
                 ui::section()
                     .key(key)
                     .role(if live {
@@ -150,10 +173,11 @@ pub fn view_with(
                         "omp.thinking"
                     })
                     .collapsible(true)
-                    .collapsed(!live)
+                    .collapsed(model.folds.get(&fold_key).copied().unwrap_or(!live))
+                    .on_toggle(move |collapsed| Msg::ToggleFold(fold_key.clone(), collapsed))
                     .prop("took", seconds.saturating_mul(1000))
                     .child(head)
-                    .children(super::content::blocks(blocks, "body", model))
+                    .children(super::content::blocks(blocks, "body", model, caps, &scope))
                     .into()
             }
             EntryKind::Tool { call, cancelled } => {
@@ -167,7 +191,7 @@ pub fn view_with(
                 if nested {
                     continue;
                 }
-                ext::tool(call, *cancelled, key, model, 0)
+                ext::tool(call, *cancelled, key, model, 0, caps)
             }
             EntryKind::Plan(plan) => {
                 let items = plan
@@ -246,19 +270,21 @@ pub fn view_with(
                 error,
                 ..
             } => {
+                let fold_key = scope.clone();
                 let mut section = ui::section()
                     .role("omp.compaction")
                     .key(key)
                     .head("Context compacted")
                     .collapsible(true)
-                    .collapsed(false);
+                    .collapsed(model.folds.get(&fold_key).copied().unwrap_or(false))
+                    .on_toggle(move |collapsed| Msg::ToggleFold(fold_key.clone(), collapsed));
                 if matches!(
                     status,
                     agent_client_protocol::schema::v1::CompactionStatus::InProgress
                 ) {
                     section = section.child(ui::spinner().key("progress").label("Compacting"));
                 }
-                for block in super::content::blocks(summary, "summary", model) {
+                for block in super::content::blocks(summary, "summary", model, caps, &scope) {
                     section = section.child(block);
                 }
                 if let Some(error) = error {
@@ -280,10 +306,13 @@ pub fn view_with(
                     Some(StateUpdate::RequiresAction(_)) => tern_sdk::ui::AgentStatus::Parked,
                     _ => tern_sdk::ui::AgentStatus::Idle,
                 };
+                let fold_key = scope.clone();
                 let mut agent = ui::agent(title.clone())
                     .key(key)
                     .depth(1_u32)
                     .collapsible(true)
+                    .collapsed(model.folds.get(&fold_key).copied().unwrap_or(false))
+                    .on_toggle(move |collapsed| Msg::ToggleFold(fold_key.clone(), collapsed))
                     .status(status);
                 if let Some(description) = description {
                     agent = agent.child(ui::text(description.clone()).key("description"));
@@ -292,9 +321,13 @@ pub fn view_with(
                     if let agent_client_protocol::schema::MaybeUndefined::Value(blocks) =
                         &message.content
                     {
-                        for block in
-                            super::content::blocks(blocks, &format!("message.{index}"), model)
-                        {
+                        for block in super::content::blocks(
+                            blocks,
+                            &format!("message.{index}"),
+                            model,
+                            caps,
+                            &scope,
+                        ) {
                             agent = agent.child(block);
                         }
                     }
@@ -1016,8 +1049,9 @@ mod tests {
             });
         let overlay = serde_json::to_string(
             &tern_sdk::reconcile::Doc::from_view(
-                view(&model, &Composer::default(), &Capabilities::default())
-                    .layer(super::super::usage::render(&model)),
+                view(&model, &Composer::default(), &Capabilities::default()).layer(
+                    super::super::usage::render(&model, &Capabilities::default()),
+                ),
             )
             .unwrap()
             .regions()[2]
@@ -1032,8 +1066,9 @@ mod tests {
         model.usage_report.details = true;
         let details = serde_json::to_string(
             &tern_sdk::reconcile::Doc::from_view(
-                view(&model, &Composer::default(), &Capabilities::default())
-                    .layer(super::super::usage::render(&model)),
+                view(&model, &Composer::default(), &Capabilities::default()).layer(
+                    super::super::usage::render(&model, &Capabilities::default()),
+                ),
             )
             .unwrap()
             .regions()[2]

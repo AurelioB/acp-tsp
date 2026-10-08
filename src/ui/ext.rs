@@ -25,6 +25,37 @@ fn title_for(name: &str) -> Option<&'static str> {
     })
 }
 
+fn file_href(path: &str, model: &Model) -> Option<String> {
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return Some(path.to_owned());
+    }
+    if path.contains("://") || path.starts_with('-') || path.is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(path);
+    let absolute: std::borrow::Cow<'_, std::path::Path> = if path.is_absolute() {
+        std::borrow::Cow::Borrowed(path)
+    } else {
+        std::borrow::Cow::Owned(model.session.as_ref()?.cwd.join(path))
+    };
+    if !absolute.is_absolute() {
+        return None;
+    }
+    use std::os::unix::ffi::OsStrExt;
+    let mut href = String::from("file://");
+    for &byte in absolute.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~') {
+            href.push(char::from(byte));
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            href.push('%');
+            href.push(char::from(HEX[usize::from(byte >> 4)]));
+            href.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    Some(href)
+}
+
 /// Tern's built-in tool cards are keyed by the `omp.tool.*` role and their head props.
 pub fn tool(
     call: &ToolCall,
@@ -32,8 +63,16 @@ pub fn tool(
     key: String,
     model: &Model,
     depth: usize,
+    caps: &tern_sdk::Capabilities,
 ) -> Node<Msg> {
     let meta = model.ext.tools.get(&call.tool_call_id);
+    let entry_id = model.transcript.iter().find_map(|entry| {
+        matches!(&entry.kind, EntryKind::Tool { call: old, .. } if old.tool_call_id == call.tool_call_id)
+            .then_some(entry.id)
+    });
+    let fold_scope = entry_id
+        .map(|id| format!("entry.{id}"))
+        .unwrap_or_else(|| key.clone());
     let claude_name = meta.and_then(|m| m.tool_name.as_deref());
     let name = match claude_name {
         Some("Bash" | "PowerShell") => "bash",
@@ -126,6 +165,7 @@ pub fn tool(
             .map(|_| call.title.clone())
     });
     let title = title_for(name).unwrap_or(&call.title);
+    let fold_key = fold_scope.clone();
     let mut node = ui::tool(name)
         .key(key)
         .role(format!("omp.tool.{name}"))
@@ -137,7 +177,14 @@ pub fn tool(
             ToolFrame::Inline
         })
         .collapsible(name == "bash" && finished)
-        .collapsed(name == "bash" && finished);
+        .collapsed(
+            model
+                .folds
+                .get(&fold_key)
+                .copied()
+                .unwrap_or(name == "bash" && finished),
+        )
+        .on_toggle(move |collapsed| Msg::ToggleFold(fold_key.clone(), collapsed));
     if let Some(target) = target {
         let target_kind = match name {
             "bash" => TargetKind::Command,
@@ -159,19 +206,21 @@ pub fn tool(
         };
         node = node.target(target).target_kind(target_kind);
     }
-    if let Some(path) = path
+    if let Some(href) = path
         .as_deref()
-        .filter(|_| matches!(name, "read" | "edit" | "write" | "delete" | "move"))
+        .filter(|_| name != "bash")
+        .and_then(|path| file_href(path, model))
+        .or_else(|| {
+            (name == "fetch")
+                .then(|| arg(&["url"]))
+                .flatten()
+                .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+                .map(str::to_owned)
+        })
     {
-        let full = if std::path::Path::new(path).is_absolute() {
-            std::path::PathBuf::from(path)
-        } else {
-            model.session.as_ref().map_or_else(
-                || std::path::PathBuf::from(path),
-                |session| session.cwd.join(path),
-            )
-        };
-        node = node.prop("href", format!("file://{}", full.display()));
+        node = node
+            .href(href)
+            .actions(ui::Actions::new().menu("open").menu("copy"));
     }
     if name == "bash" {
         node = node.prop("lang", "bash");
@@ -232,6 +281,7 @@ pub fn tool(
                     .collect();
                 ui::diff()
                     .key(i)
+                    .actions(super::content::copy_menu())
                     .path(diff.path.display().to_string())
                     .hunks(vec![Hunk {
                         old_start: Some(1),
@@ -254,11 +304,12 @@ pub fn tool(
                 ui::ansi(text.text.clone())
                     .key(i)
                     .role("omp.tool.bash.output")
+                    .actions(super::content::copy_menu())
                     .prop("follow", false)
                     .into()
             }
             ToolCallContent::Content(content) => {
-                super::content::block(&content.content, format!("{i}"), model)
+                super::content::block(&content.content, format!("{i}"), model, caps, &fold_scope)
             }
             ToolCallContent::Terminal(terminal)
                 if meta.is_some_and(|m| {
@@ -271,6 +322,8 @@ pub fn tool(
                 &terminal.terminal_id,
                 model.content.terminals.get(&terminal.terminal_id),
                 format!("{i}"),
+                model,
+                &fold_scope,
             ),
             _ => ui::code("Unsupported tool content").key(i).into(),
         };
@@ -283,6 +336,7 @@ pub fn tool(
             let mut code = ui::code(source.to_owned())
                 .key("source")
                 .role("omp.tool.write.source")
+                .actions(super::content::copy_menu())
                 .numbers(true);
             if let Some(ext) = path
                 .as_deref()
@@ -300,6 +354,7 @@ pub fn tool(
             node = node.child(
                 ui::diff()
                     .key("patch")
+                    .actions(super::content::copy_menu())
                     .path(path.as_deref().unwrap_or_default())
                     .hunks(vec![Hunk {
                         old_start: Some(1),
@@ -319,6 +374,7 @@ pub fn tool(
                 ui::ansi(meta.output.clone())
                     .key("terminal.output")
                     .role("omp.tool.bash.output")
+                    .actions(super::content::copy_menu())
                     .prop("follow", false),
             );
             if meta.truncated {
@@ -330,7 +386,11 @@ pub fn tool(
             }
         }
         if !meta.mcp_output.is_empty() {
-            node = node.child(ui::ansi(meta.mcp_output.clone()).key("mcp.output"));
+            node = node.child(
+                ui::ansi(meta.mcp_output.clone())
+                    .key("mcp.output")
+                    .actions(super::content::copy_menu()),
+            );
         }
         if let Some(error) = &meta.error {
             node = node.child(
@@ -361,25 +421,45 @@ pub fn tool(
     if matches!(name, "generic" | "mcp")
         && let Some(raw) = &call.raw_input
     {
+        let fold_key = format!("{fold_scope}.raw.in");
+        let mut section = ui::section()
+            .key("raw.in")
+            .head("Input")
+            .collapsible(true)
+            .collapsed(model.folds.get(&fold_key).copied().unwrap_or(true))
+            .on_toggle(move |collapsed| Msg::ToggleFold(fold_key.clone(), collapsed));
+        if let Some(data) = super::content::json_data(raw, caps) {
+            section = section.child(data);
+        }
         node = node.child(
-            ui::section()
-                .key("raw.in")
-                .head("Input")
-                .collapsible(true)
-                .collapsed(true)
-                .child(ui::code(raw.to_string()).key("body")),
+            section.child(
+                ui::code(raw.to_string())
+                    .key("body")
+                    .lang("json")
+                    .actions(super::content::copy_menu()),
+            ),
         );
     }
     if matches!(name, "generic" | "mcp")
         && let Some(raw) = &call.raw_output
     {
+        let fold_key = format!("{fold_scope}.raw.out");
+        let mut section = ui::section()
+            .key("raw.out")
+            .head("Output")
+            .collapsible(true)
+            .collapsed(model.folds.get(&fold_key).copied().unwrap_or(true))
+            .on_toggle(move |collapsed| Msg::ToggleFold(fold_key.clone(), collapsed));
+        if let Some(data) = super::content::json_data(raw, caps) {
+            section = section.child(data);
+        }
         node = node.child(
-            ui::section()
-                .key("raw.out")
-                .head("Output")
-                .collapsible(true)
-                .collapsed(true)
-                .child(ui::code(raw.to_string()).key("body")),
+            section.child(
+                ui::code(raw.to_string())
+                    .key("body")
+                    .lang("json")
+                    .actions(super::content::copy_menu()),
+            ),
         );
     }
     if depth < 8 {
@@ -404,10 +484,13 @@ pub fn tool(
             })
             .collect();
         if !children.is_empty() {
+            let fold_key = format!("{fold_scope}.subagent");
             let mut agent = ui::agent("Agent")
                 .key("subagent")
                 .depth((depth + 1) as u32)
-                .collapsible(true);
+                .collapsible(true)
+                .collapsed(model.folds.get(&fold_key).copied().unwrap_or(false))
+                .on_toggle(move |collapsed| Msg::ToggleFold(fold_key.clone(), collapsed));
             for (id, child, cancelled) in children {
                 agent = agent.child(tool(
                     child,
@@ -415,6 +498,7 @@ pub fn tool(
                     format!("child.{id}"),
                     model,
                     depth + 1,
+                    caps,
                 ));
             }
             node = node.child(agent);

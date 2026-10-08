@@ -133,7 +133,13 @@ expression: wire(&model)
         "p": {
           "key": "entry.1",
           "role": "omp.user",
-          "tone": "user"
+          "tone": "user",
+          "actions": {
+            "menu": [
+              "copy",
+              "edit"
+            ]
+          }
         },
         "c": [
           {
@@ -168,7 +174,13 @@ expression: wire(&model)
             "k": "md",
             "p": {
               "text": "Fix it",
-              "key": "body.0"
+              "key": "body.0",
+              "actions": {
+                "menu": [
+                  "copy",
+                  "edit"
+                ]
+              }
             }
           }
         ]
@@ -202,7 +214,12 @@ expression: wire(&model)
             "k": "md",
             "p": {
               "text": "Investigating",
-              "key": "body.0"
+              "key": "body.0",
+              "actions": {
+                "menu": [
+                  "copy"
+                ]
+              }
             }
           }
         ]
@@ -222,6 +239,12 @@ expression: wire(&model)
           "target": "/tmp/main.rs",
           "targetKind": "path",
           "href": "file:///tmp/main.rs",
+          "actions": {
+            "menu": [
+              "open",
+              "copy"
+            ]
+          },
           "age": 0
         },
         "c": [
@@ -230,6 +253,11 @@ expression: wire(&model)
             "k": "diff",
             "p": {
               "key": 0,
+              "actions": {
+                "menu": [
+                  "copy"
+                ]
+              },
               "path": "/tmp/main.rs",
               "hunks": [
                 {
@@ -281,7 +309,12 @@ expression: wire(&model)
             "p": {
               "text": "Fixed.",
               "key": "body.0",
-              "stream": true
+              "stream": true,
+              "actions": {
+                "menu": [
+                  "copy"
+                ]
+              }
             }
           }
         ]

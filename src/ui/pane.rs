@@ -6,6 +6,7 @@
 //! between session calls on the UI thread, so it never splits a frame.
 use std::{cell::RefCell, io, rc::Rc, time::Duration};
 
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use tern_sdk::term::Terminal;
 
 use crate::model::{Model, Turn, TurnOutcome};
@@ -89,13 +90,19 @@ impl PaneSignals {
             self.progress = progress;
         }
         let dialog = model.dialogs.front().copied();
-        if dialog.is_some() && dialog != self.dialog {
-            let what = if model.oldest_permission().is_some() {
-                "Permission needed"
-            } else {
-                "Question waiting"
-            };
-            self.notify(&agent, what)?;
+        if dialog != self.dialog {
+            // The answered request's notice is stale: close it (the next one gets its own id).
+            if let Some(old) = self.dialog {
+                self.close(&format!("dialog-{old}"))?;
+            }
+            if let Some(id) = dialog {
+                let what = if model.oldest_permission().is_some() {
+                    "Permission needed"
+                } else {
+                    "Question waiting"
+                };
+                self.notify(&format!("dialog-{id}"), &agent, what)?;
+            }
         }
         self.dialog = dialog;
         if model.finished_turns != self.finished_turns {
@@ -108,12 +115,12 @@ impl PaneSignals {
                 Some(TurnOutcome::Done | TurnOutcome::Cancelled) | None => None,
             };
             if let Some(body) = body {
-                self.notify(&agent, &body)?;
+                self.notify("turn", &agent, &body)?;
             }
         }
         let exited = model.exited.is_some();
         if exited && !self.exited {
-            self.notify(&agent, "Agent exited")?;
+            self.notify("exit", &agent, "Agent exited")?;
         }
         self.exited = exited;
         Ok(())
@@ -128,10 +135,27 @@ impl PaneSignals {
         Ok(())
     }
 
-    fn notify(&mut self, agent: &str, body: &str) -> io::Result<()> {
-        // Basic OSC 99 (kitty notifications): one line, no metadata.
+    /// An OSC 99 (kitty) notification: the agent as title, `body`, focusing the pane when
+    /// clicked. Payloads are base64 (`e=1`), so no text can end the sequence early. A later
+    /// notice with the same `id` replaces this one.
+    fn notify(&mut self, id: &str, agent: &str, body: &str) -> io::Result<()> {
+        let id = format!("acp-tsp-{}-{id}", std::process::id());
+        let app = BASE64.encode("acp-tsp");
+        let title = BASE64.encode(agent);
+        let body = BASE64.encode(clean(body));
+        self.out.write(
+            format!(
+                "\x1b]99;i={id}:f={app}:a=focus:d=0:e=1;{title}\x1b\\\x1b]99;i={id}:p=body:e=1;{body}\x1b\\"
+            )
+            .as_bytes(),
+        )
+    }
+
+    /// Withdraws notification `id`.
+    fn close(&mut self, id: &str) -> io::Result<()> {
+        let id = format!("acp-tsp-{}-{id}", std::process::id());
         self.out
-            .write(format!("\x1b]99;;{}: {}\x1b\\", agent, clean(body)).as_bytes())
+            .write(format!("\x1b]99;i={id}:p=close;\x1b\\").as_bytes())
     }
 }
 
@@ -267,16 +291,28 @@ mod tests {
 
         permission(&mut model, 7);
         signals.sync(&model).unwrap();
+        let out = take(&bytes);
+        assert!(out.starts_with("\x1b]9;4;4;\x1b\\"), "{out:?}");
         assert_eq!(
-            take(&bytes),
-            "\x1b]9;4;4;\x1b\\\x1b]99;;Codex: Permission needed\x1b\\"
+            notices(&out),
+            [(
+                "dialog-7".into(),
+                "Codex".into(),
+                "Permission needed".into()
+            )]
         );
         signals.sync(&model).unwrap();
         assert_eq!(take(&bytes), "", "one notification per request");
 
         model.apply(BridgeEvent::Resolved(7));
         signals.sync(&model).unwrap();
-        assert_eq!(take(&bytes), "\x1b]9;4;3;\x1b\\");
+        let out = take(&bytes);
+        assert!(out.starts_with("\x1b]9;4;3;\x1b\\"), "{out:?}");
+        assert_eq!(
+            closed(&out),
+            ["dialog-7"],
+            "the answered request's notice goes"
+        );
 
         end(&mut model, Ok(StopReason::EndTurn));
         signals.sync(&model).unwrap();
@@ -301,7 +337,63 @@ mod tests {
         model.submitted("two".into());
         end(&mut model, Err("boom".into()));
         signals.sync(&model).unwrap();
-        assert!(take(&bytes).ends_with("\x1b]99;;Codex: Stopped with error\x1b\\"));
+        assert_eq!(
+            notices(&take(&bytes)),
+            [("turn".into(), "Codex".into(), "Stopped with error".into())]
+        );
+    }
+
+    #[test]
+    fn notice_text_is_encoded_so_it_cannot_end_the_sequence() {
+        let (mut signals, bytes) = signals();
+        signals
+            .notify("x", "Agent\u{7};\u{1b}\\ 🦀", "line\u{1b}]2;evil")
+            .unwrap();
+        let out = take(&bytes);
+        // Exactly the two sequences written: the title part and the body part.
+        assert_eq!(out.matches("\x1b]").count(), 2, "{out:?}");
+        assert_eq!(
+            notices(&out),
+            [(
+                "x".into(),
+                "Agent\u{7};\u{1b}\\ 🦀".into(),
+                "line ]2;evil".into()
+            )]
+        );
+    }
+
+    /// Decodes OSC 99 notices as (id suffix, title, body).
+    fn notices(out: &str) -> Vec<(String, String, String)> {
+        let mut found: Vec<(String, String, String)> = Vec::new();
+        for sequence in out.split("\x1b]99;").skip(1) {
+            let sequence = sequence.split("\x1b\\").next().unwrap();
+            let (meta, payload) = sequence.split_once(';').unwrap();
+            let keys: Vec<_> = meta.split(':').collect();
+            if keys.contains(&"p=close") {
+                continue;
+            }
+            assert!(keys.contains(&"e=1"), "payloads are base64: {meta}");
+            let text = String::from_utf8(BASE64.decode(payload).unwrap()).unwrap();
+            let id = keys[0].strip_prefix("i=").unwrap();
+            let id = id.splitn(4, '-').nth(3).unwrap().to_owned();
+            if keys.contains(&"p=body") {
+                found.last_mut().unwrap().2 = text;
+            } else {
+                found.push((id, text, String::new()));
+            }
+        }
+        found
+    }
+
+    fn closed(out: &str) -> Vec<String> {
+        out.split("\x1b]99;")
+            .skip(1)
+            .filter(|s| s.contains("p=close"))
+            .map(|s| {
+                let id = s.split(':').next().unwrap().strip_prefix("i=").unwrap();
+                id.splitn(4, '-').nth(3).unwrap().to_owned()
+            })
+            .collect()
     }
 
     #[test]

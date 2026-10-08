@@ -1,10 +1,13 @@
 //! Usage overlay styled by Tern's built-in omp role CSS.
-use tern_sdk::ui::{self, Align, Gap, MeterStyle, Node, OverlaySize};
+use tern_sdk::{
+    Capabilities,
+    ui::{self, Align, ChartKind, Gap, MeterStyle, Node, OverlaySize, Point, Size},
+};
 
 use super::{Msg, view::compact_tokens};
 use crate::model::{Model, Turn};
 
-pub fn render(model: &Model) -> Node<Msg> {
+pub fn render(model: &Model, caps: &Capabilities) -> Node<Msg> {
     let report = &model.usage_report;
     let checked: Node<Msg> = if report.fetching {
         ui::text("Checking…").key("checked").into()
@@ -50,14 +53,11 @@ pub fn render(model: &Model) -> Node<Msg> {
     if report.details {
         let raw: Node<Msg> = if report.raw.is_empty() {
             ui::text("No agent report yet.").key("raw").into()
-        } else if model
-            .agent
-            .as_ref()
-            .is_some_and(|agent| agent.name == crate::quirks::CODEX_ACP)
-        {
-            ui::text(report.raw.clone()).key("raw").into()
         } else {
-            ui::md(report.raw.clone()).key("raw").into()
+            ui::ansi(report.raw.clone())
+                .key("raw")
+                .prop("max", serde_json::json!({ "h": "16lines" }))
+                .into()
         };
         body = body.child(raw);
     } else {
@@ -256,6 +256,63 @@ pub fn render(model: &Model) -> Node<Msg> {
                 .key("cost"),
             );
         }
+        if super::supports(caps, "chart") && completed >= 2 {
+            let mut turns: Vec<_> = model.turn_summaries.iter().collect();
+            turns.sort_unstable_by_key(|(id, _)| *id);
+            let mut bars = Vec::with_capacity(turns.len());
+            let mut durations = Vec::with_capacity(turns.len());
+            for (index, (_, turn)) in turns.iter().enumerate() {
+                let seconds = turn.duration.as_secs_f64();
+                durations.push(Point {
+                    value: seconds,
+                    title: Some(format!("Turn {}: {seconds:.1}s", index + 1)),
+                    ..Point::default()
+                });
+                #[cfg(feature = "unstable_end_turn_token_usage")]
+                let (value, title) = turn.tokens.as_ref().map_or_else(
+                    || (0.0, format!("Turn {}: tokens unknown", index + 1)),
+                    |usage| {
+                        let cached = usage
+                            .cached_read_tokens
+                            .unwrap_or(0)
+                            .saturating_add(usage.cached_write_tokens.unwrap_or(0));
+                        let tokens = usage
+                            .input_tokens
+                            .saturating_add(cached)
+                            .saturating_add(usage.output_tokens);
+                        (
+                            tokens as f64,
+                            format!("Turn {}: {} tokens", index + 1, compact_tokens(tokens)),
+                        )
+                    },
+                );
+                #[cfg(not(feature = "unstable_end_turn_token_usage"))]
+                let (value, title) = (seconds, format!("Turn {}: {seconds:.1}s", index + 1));
+                bars.push(Point {
+                    value,
+                    title: Some(title),
+                    ..Point::default()
+                });
+            }
+            #[cfg(feature = "unstable_end_turn_token_usage")]
+            let bar_summary = "Tokens per turn (input + output; unreported turns unknown)";
+            #[cfg(not(feature = "unstable_end_turn_token_usage"))]
+            let bar_summary = "Time per turn";
+            session = session
+                .child(
+                    ui::chart(ChartKind::Bars)
+                        .key("turn-bars")
+                        .size(Size::Sm)
+                        .series(bars)
+                        .summary(bar_summary),
+                )
+                .child(
+                    ui::chart(ChartKind::Spark)
+                        .key("turn-durations")
+                        .series(durations)
+                        .summary("Turn durations (seconds)"),
+                );
+        }
         body = body.child(
             ui::row()
                 .key("providers")
@@ -265,6 +322,44 @@ pub fn render(model: &Model) -> Node<Msg> {
                 .child(provider)
                 .child(session),
         );
+        let mut history = ui::col()
+            .key("history")
+            .role("omp.usage.activity")
+            .gap(Gap::Sm)
+            .child(
+                ui::text(ui::span("Recorded on this machine by acp-tsp").style("strong"))
+                    .key("history-title"),
+            );
+        if let Some(activity) = &report.history {
+            if activity.turns == 0 {
+                history = history.child(ui::text("No history yet").key("history-empty"));
+            } else {
+                if super::supports(caps, "chart") {
+                    history = history.child(
+                        ui::chart(ChartKind::Heatmap)
+                            .key("history-heatmap")
+                            .size(Size::Sm)
+                            .token("accent")
+                            .rows(["M", "", "W", "", "F", "", ""].map(str::to_owned).to_vec())
+                            .cols(activity.cols.clone())
+                            .cells(activity.cells.clone())
+                            .tips(activity.tips.clone())
+                            .summary(format!("{} turns · last 26 weeks", activity.turns)),
+                    );
+                }
+                for (key, label, total) in [
+                    ("today", "Today", &activity.today),
+                    ("week", "Last 7 days", &activity.week),
+                    ("month", "Last 30 days", &activity.month),
+                ] {
+                    history =
+                        history.child(ui::text(format!("{label}: {}", total.label())).key(key));
+                }
+            }
+        } else {
+            history = history.child(ui::text("No history yet").key("history-empty"));
+        }
+        body = body.child(history);
     }
     ui::col()
         .child(
@@ -345,6 +440,76 @@ mod label_tests {
         assert_eq!(
             crate::model::usage::credits_text("unlimited"),
             "Credits: unlimited"
+        );
+    }
+    #[test]
+    fn dashboard_charts_show_all_turns_and_26_weeks() {
+        use std::time::Duration;
+        use tern_sdk::{
+            reconcile::{Doc, Tree},
+            ui::View,
+        };
+
+        fn chart<'a>(node: &'a Tree, kind: &str) -> Option<&'a Tree> {
+            if node.kind() == "chart"
+                && node.props().get("kind").and_then(serde_json::Value::as_str) == Some(kind)
+            {
+                return Some(node);
+            }
+            node.children().iter().find_map(|child| chart(child, kind))
+        }
+
+        let mut model = Model::default();
+        let caps = Capabilities {
+            kinds: vec!["chart".into()],
+            ..Capabilities::default()
+        };
+        for id in 1..=3 {
+            model.turn_summaries.insert(
+                id,
+                crate::model::TurnSummary {
+                    duration: Duration::from_secs(id),
+                    #[cfg(feature = "unstable_end_turn_token_usage")]
+                    tokens: None,
+                    cost: None,
+                    stop: None,
+                },
+            );
+        }
+        model.usage_report.history = Some(crate::usage_history::History {
+            cells: vec![vec![Some(0.0); 26]; 7],
+            tips: vec![vec![Some("0 tokens".into()); 26]; 7],
+            cols: vec![tern_sdk::ui::ChartCol {
+                at: 0,
+                label: "Apr".into(),
+            }],
+            today: Default::default(),
+            week: Default::default(),
+            month: Default::default(),
+            turns: 3,
+        });
+        let doc = Doc::from_view(View::new().layer(render(&model, &caps))).unwrap();
+        let root = doc.regions()[2].as_ref().unwrap();
+        for kind in ["bars", "spark"] {
+            let series = chart(root, kind).unwrap().props()["series"]
+                .as_array()
+                .unwrap();
+            assert_eq!(series.len(), 3);
+        }
+        let heatmap = chart(root, "heatmap").unwrap();
+        let cells = heatmap.props()["cells"].as_array().unwrap();
+        assert_eq!(cells.len(), 7);
+        assert!(cells.iter().all(|row| row.as_array().unwrap().len() == 26));
+        assert!(
+            chart(
+                Doc::from_view(View::new().layer(render(&Model::default(), &caps)))
+                    .unwrap()
+                    .regions()[2]
+                    .as_ref()
+                    .unwrap(),
+                "bars"
+            )
+            .is_none()
         );
     }
 }

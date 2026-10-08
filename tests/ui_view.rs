@@ -151,6 +151,59 @@ fn prior_turn_thoughts_stay_collapsed_while_new_turn_streams() {
 }
 
 #[test]
+fn a_thought_follows_user_fold_choice_after_finishing() {
+    let mut model = Model::default();
+    model.submitted("first".into());
+    update(
+        &mut model,
+        SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            "investigating",
+        )))),
+    );
+    let thought_id = model.transcript.last().unwrap().id;
+    let fold_key = format!("entry.{thought_id}");
+    let live = wire(&model);
+    assert_eq!(
+        live["main"]["c"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["p"]["role"] == "omp.thinking.live")
+            .unwrap()["p"]["collapsed"],
+        false
+    );
+    model.folds.insert(fold_key, false);
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(
+        agent_client_protocol::schema::v1::PromptResponse::new(
+            agent_client_protocol::schema::v1::StopReason::EndTurn,
+        ),
+    ))));
+    let finished = wire(&model);
+    assert_eq!(
+        finished["main"]["c"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["p"]["role"] == "omp.thinking")
+            .unwrap()["p"]["collapsed"],
+        false
+    );
+}
+
+#[test]
+fn session_switch_discards_fold_choices() {
+    let mut model = Model::default();
+    model.submitted("first".into());
+    model
+        .folds
+        .insert(format!("entry.{}", model.transcript[0].id), true);
+    model.apply(BridgeEvent::SessionStarting(
+        acp_tsp::event::SessionStartKind::New,
+    ));
+    assert!(model.folds.is_empty());
+}
+
+#[test]
 fn many_entries_have_unique_wire_ids() {
     let mut model = Model::default();
     for i in 0..100 {
@@ -238,6 +291,40 @@ fn shell_and_read_use_their_omp_tool_frames() {
     assert_eq!(bash["p"]["frame"], "card");
     assert_eq!(bash["p"]["preview"]["tail"], 10);
     assert_eq!(bash["c"][0]["p"]["role"], "omp.tool.bash.output");
+}
+
+#[test]
+fn tool_file_href_is_encoded_but_shell_command_is_not_a_link() {
+    let mut model = Model::default();
+    update(
+        &mut model,
+        SessionUpdate::ToolCall(
+            ToolCall::new("read", "Read source")
+                .kind(ToolKind::Read)
+                .raw_input(json!({"file_path": "/tmp/my file#é.rs"})),
+        ),
+    );
+    update(
+        &mut model,
+        SessionUpdate::ToolCall(
+            ToolCall::new("bash", "Run cat")
+                .kind(ToolKind::Execute)
+                .raw_input(json!({"command": "cat /tmp/my file#é.rs"})),
+        ),
+    );
+    let doc = wire(&model);
+    let entries = doc["main"]["c"].as_array().unwrap();
+    let read = entries
+        .iter()
+        .find(|node| node["p"]["role"] == "omp.tool.read")
+        .unwrap();
+    assert_eq!(read["p"]["href"], "file:///tmp/my%20file%23%C3%A9.rs");
+    assert_eq!(read["p"]["actions"]["menu"], json!(["open", "copy"]));
+    let shell = entries
+        .iter()
+        .find(|node| node["p"]["role"] == "omp.tool.bash")
+        .unwrap();
+    assert!(shell["p"].get("href").is_none());
 }
 
 #[cfg(feature = "unstable_end_turn_token_usage")]

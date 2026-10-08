@@ -4,7 +4,11 @@ pub mod content;
 pub mod ext;
 pub mod session;
 pub mod usage;
-use std::{collections::VecDeque, path::PathBuf, time::Instant};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    time::Instant,
+};
 
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, ContentBlock, ContentChunk, Implementation,
@@ -154,6 +158,8 @@ pub struct Model {
     pub turn: Turn,
     pub queued: usize,
     pub transcript: Vec<Entry>,
+    /// User-chosen collapsed state, keyed by transcript entry and node path.
+    pub folds: HashMap<String, bool>,
     pub turn_summaries: std::collections::HashMap<u64, TurnSummary>,
     turn_started: Option<Instant>,
     turn_cost_at_start: Option<(String, f64)>,
@@ -201,6 +207,7 @@ impl Default for Model {
             turn_started: None,
             turn_cost_at_start: None,
             transcript: Vec::new(),
+            folds: HashMap::new(),
             permissions: VecDeque::new(),
             elicitations: VecDeque::new(),
             dialogs: VecDeque::new(),
@@ -382,6 +389,7 @@ impl Model {
                 self.local_echo = None;
                 self.queued_echoes.clear();
                 self.transcript.clear();
+                self.folds.clear();
                 self.permissions.clear();
                 self.elicitations.clear();
                 self.dialogs.clear();

@@ -150,7 +150,8 @@ expression: "wire(&model)[\"main\"]"
             "name": "Agent",
             "key": "subagent",
             "depth": 1,
-            "collapsible": true
+            "collapsible": true,
+            "collapsed": false
           },
           "c": [
             {

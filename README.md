@@ -37,10 +37,18 @@ additional existing workspace directories when the agent supports them.
 The pane follows the session: its title is the session title (the agent's name until there is
 one, OSC 2), Tern's working indicator runs during a turn and pauses while a permission request,
 question or sign-in waits (OSC 9;4), and Tern's attention inbox gets "Permission needed",
-"Question waiting", "Stopped with error" and "Agent exited" notices (OSC 99). A finished turn
-is the progress clearing: in an agent block Tern records it as `agent-done` itself; launched
-from a shell prompt, the busy indicator just stops and no inbox entry is added. Cancelled
-turns and hidden usage queries stay quiet.
+"Question waiting", "Stopped with error" and "Agent exited" notices (OSC 99, base64-encoded with
+a per-request id; an answered request's notice is withdrawn). A finished turn is the progress
+clearing: in an agent block Tern records it as `agent-done` itself; launched from a shell
+prompt, the busy indicator just stops and no inbox entry is added. Cancelled turns and hidden
+usage queries stay quiet.
+
+Right-click a message for Copy (and Edit on your own prompts, which puts the text back in the
+composer). Code, terminal output and diffs copy the same way; tool cards and resource links
+with a file or web target open with ⌘-click or Open; images zoom on click. Folding a card stays
+as you left it when its tool finishes. JSON in tool input/output shows as a native tree, or a
+table for lists of flat records, with the raw JSON kept beside it. Math in agent answers
+(`$…$`, `$$…$$`) is typeset by Tern's Markdown.
 
 `setup-tern` updates `agent_command` in Tern's settings, making a timestamped backup first. It leaves `new_blocks` unchanged unless passed `--new-blocks-agent`; `--settings PATH` overrides settings location and `--print` prints the JSON snippet without writing. On Linux the default settings location is `$XDG_CONFIG_HOME/tern/settings.json` (or `~/.config/tern/settings.json`), a best-known default that may vary by Tern installation. macOS uses `~/Library/Application Support/Tern/settings.json`.
 
@@ -155,6 +163,9 @@ issue, not a general agy requirement.
 | Shift+Tab | cycle mode (prefers the agent's mode config option) |
 | `/usage` / click composer usage or context meter | open usage dashboard (Overview, Details, Refresh) |
 | r / Escape (usage dashboard) | refresh the adapter's local usage report / close |
+| PageUp / PageDown (transcript) | jump between user prompts; PageDown past the newest prompt returns to the last entry |
+| PageUp / PageDown (picker, usage Details, settings, focused terminal output) | scroll the active container without moving the transcript |
+| Ctrl+Z (no dialog open) | return to the shell; `fg` resumes this surface and the agent subprocesses in the same foreground job |
 | Click active configuration chip (for example, Codex Plan) | return that select option to its default |
 | ↑ ↓ | prompt history |
 | Escape, Ctrl+C | cancel the running turn |
@@ -164,6 +175,10 @@ issue, not a general agy requirement.
 | k while a terminal card is focused | kill its running process |
 | r | restart an agent that exited |
 | Ctrl+D (empty composer), Ctrl+C twice | quit |
+
+If Tern discards the inline surface after scrollback is cleared, acp-tsp reopens it and redraws
+the conversation without losing the draft prompt. Older Tern versions without the `prefs` element
+show a notice rather than an unsupported settings sheet.
 
 During a running turn, Enter steers immediately when the agent advertises steering;
 Alt+Enter always queues the next normal prompt. Without steering support both send keys
@@ -185,8 +200,16 @@ a running turn; it reports windows, credit balance, and available resets.
 Refresh with `r`; Details shows Claude's report or a human-readable Codex summary
 (without account or reset-credit IDs). Claude does not expose reset credits.
 Codex's `/status` remains available as an ordinary agent command.
-The dashboard also totals this session's reported tokens, cost, context and turn
-durations; no cross-session activity is inferred. The composer usage text and
+The dashboard totals this session's reported tokens, cost, context and turn
+durations, with per-turn token bars and a duration sparkline after two turns
+(duration bars without the end-turn token feature). Its 26-week calendar and
+today / 7-day / 30-day totals use **only turns recorded on this machine by
+acp-tsp**, not provider-wide usage. After each visible turn it appends counts
+and duration (plus timestamp, adapter name and any reported cost) to
+`$XDG_STATE_HOME/acp-tsp/usage.jsonl` (default
+`~/.local/state/acp-tsp/usage.jsonl`); missing token counts remain unknown.
+It never stores prompts, session IDs, paths or account data. Set
+`ACP_TSP_USAGE_HISTORY=0` to stop recording. The composer usage text and
 context meter open it. Codex's `collaboration_mode` Plan setting appears as a
 chip while active; click to return to default, use `/plan` or `/config` to enable
 it again. Codex asks structured questions (`request_user_input`) in Plan mode; in

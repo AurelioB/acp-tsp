@@ -31,6 +31,7 @@ Status meanings:
 | session/resume, close, delete, fork | yes | fake | fake | unknown |
 | CLI `--resume ID` / `--resume` picker / `--continue`, resume hint on quit | yes | live (`--resume ID` replays history) | live (all three; a session open in another Codex client fails with Codex's own error) | unknown |
 | pane title (OSC 2), working/waiting progress (OSC 9;4), attention notices (OSC 99) | yes | live (title, resume) | live (agent block: busy during turns, `waiting` inbox entry for a permission, one `agent-done` on completion) | unknown |
+| TSP: context menus (Copy, Edit), open/zoom links, fold memory, JSON tree/table, PageUp/PageDown, surface reopen, Ctrl+Z | yes (agent-independent) | live in headless Tern: Copy/Edit menu, Edit into composer, usage charts and heatmap; scripted: reveal, picker scroll, surface reopen, adopt fallback, JSON tree/table; Ctrl+Z untested live (headless Tern does not deliver Ctrl keys) | same | same |
 | modes / config options / model picker | yes | live (chips, sheet) | live (Shift+Tab mode, picker) | unknown |
 | slash commands, `@` mentions | yes | live | live (`/`) | unknown |
 | usage dashboard (limits, available resets, session totals) | yes | live (`/usage`: windows with reset times; no consumable reset credits exist in claude-agent-acp 0.87.0's usage schema) | live (`account/rateLimits/read` via `codex-acp cli app-server`: windows, credits, available resets) | n/a (agent): agy 1.3.0 has no usage query; a quota-exhausted turn error carries the reset time |
@@ -70,6 +71,16 @@ Codex Details is a human-readable summary, not raw JSON. Agents without a suppor
 (agy, others) show session totals and "This agent does not offer a local usage command"
 instead of limits, never zero. Values are replaced on refresh, and "checked … ago" shows
 how old they are.
+
+The 26-week `/usage` heatmap is **recorded on this machine by acp-tsp**, not a
+provider-wide billing history. Each visible turn writes one private line to
+`$XDG_STATE_HOME/acp-tsp/usage.jsonl` (or
+`~/.local/state/acp-tsp/usage.jsonl`): Unix time, adapter name, input/cache/
+output token counts when reported (unknown otherwise), optional cost with
+currency, and duration in milliseconds. No prompts, session IDs, cwd or
+account data are stored. The directory is created with mode 0700 and file
+with 0600 on Unix. Set `ACP_TSP_USAGE_HISTORY=0` to disable new writes;
+already recorded history is still available in the dashboard.
 
 "Resets" means two things. Reset **times** (when a window refills) come from Claude's `/usage`
 and Codex's `resetsAt`. Reset **credits** (consumable early resets) exist only in Codex's

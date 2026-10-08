@@ -17,6 +17,12 @@ pub fn image_key(data: &str) -> u64 {
     hasher.finish()
 }
 
+/// Forget image references after the surface is replaced so upload repopulates the view.
+/// The SDK retains blobs across surfaces and deduplicates the wire payload by hash.
+pub fn reset_uploads(model: &mut Model) {
+    model.content.blobs.clear();
+}
+
 /// Upload only images not previously sent; `Session::blob` deduplicates wire payloads too.
 pub fn upload(term: &mut Session<Msg>, model: &mut Model) -> anyhow::Result<()> {
     if !term
@@ -123,26 +129,217 @@ fn collect_image<'a>(
     }
 }
 
-pub fn block(block: &ContentBlock, key: impl Into<String>, model: &Model) -> Node<Msg> {
+/// JSON keeps a native browsable view and an independently foldable source view.
+/// Tern copies the source from the code node, not the tree/table presentation.
+pub(crate) fn json_display(
+    value: &serde_json::Value,
+    source: &str,
+    key: &str,
+    model: &Model,
+    caps: &tern_sdk::Capabilities,
+    scope: &str,
+) -> Node<Msg> {
+    let source_key = format!("{scope}.{key}.source");
+    let code = ui::section()
+        .key("source")
+        .head("Raw JSON")
+        .collapsible(true)
+        .collapsed(model.folds.get(&source_key).copied().unwrap_or(true))
+        .on_toggle(move |collapsed| Msg::ToggleFold(source_key.clone(), collapsed))
+        .child(
+            ui::code(source.to_owned())
+                .key("code")
+                .lang("json")
+                .actions(copy_menu()),
+        );
+    let mut col = ui::col().key(key);
+    if let Some(data) = json_data(value, caps) {
+        col = col.child(data);
+    }
+    col.child(code).into()
+}
+
+pub(crate) fn json_data(
+    value: &serde_json::Value,
+    caps: &tern_sdk::Capabilities,
+) -> Option<Node<Msg>> {
+    if let Some(rows) = value.as_array()
+        && !rows.is_empty()
+        && rows.len() <= 200
+        && rows.iter().all(|row| {
+            row.as_object()
+                .is_some_and(|obj| obj.values().all(is_scalar))
+        })
+        && super::supports(caps, "table")
+    {
+        let mut names = Vec::new();
+        'columns: for row in rows {
+            for name in row.as_object().expect("all rows are objects").keys() {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                    if names.len() > 8 {
+                        break 'columns;
+                    }
+                }
+            }
+        }
+        if !names.is_empty() && names.len() <= 8 {
+            let cols: Vec<_> = names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    ui::Column::new(name.clone(), name.clone()).priority((names.len() - i) as f64)
+                })
+                .collect();
+            let rows: Vec<_> = rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let mut out = ui::TableRow::new(i.to_string());
+                    for (name, value) in row.as_object().expect("all rows are objects") {
+                        out = out.cell(name.clone(), scalar(value));
+                    }
+                    out
+                })
+                .collect();
+            return Some(ui::table().key("data").cols(cols).rows(rows).into());
+        }
+    }
+    if !super::supports(caps, "tree") || !value.is_object() && !value.is_array() {
+        return None;
+    }
+    let mut remaining = 498;
+    let mut truncated = false;
+    let root = tree_item(
+        value,
+        "#".into(),
+        "JSON".into(),
+        &mut remaining,
+        &mut truncated,
+    )
+    .open(true);
+    Some(ui::tree().key("data").nodes(vec![root]).into())
+}
+
+fn is_scalar(value: &serde_json::Value) -> bool {
+    !value.is_object() && !value.is_array()
+}
+
+fn scalar(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn tree_item(
+    value: &serde_json::Value,
+    path: String,
+    label: String,
+    remaining: &mut usize,
+    truncated: &mut bool,
+) -> ui::TreeItem {
+    match value {
+        serde_json::Value::Object(object) => tree_children(
+            ui::TreeItem::new(path.clone(), format!("{label} {{{}}}", object.len())),
+            &path,
+            object.len(),
+            object.iter().map(|(key, value)| (key.as_str(), value)),
+            remaining,
+            truncated,
+        ),
+        serde_json::Value::Array(array) => tree_children(
+            ui::TreeItem::new(path.clone(), format!("{label} [{}]", array.len())),
+            &path,
+            array.len(),
+            array
+                .iter()
+                .enumerate()
+                .map(|(index, value)| (index.to_string(), value)),
+            remaining,
+            truncated,
+        ),
+        _ => ui::TreeItem::new(path, label),
+    }
+}
+
+fn tree_children<'a, S: AsRef<str>, I: Iterator<Item = (S, &'a serde_json::Value)>>(
+    mut node: ui::TreeItem,
+    path: &str,
+    count: usize,
+    items: I,
+    remaining: &mut usize,
+    truncated: &mut bool,
+) -> ui::TreeItem {
+    for (index, (name, child)) in items.enumerate() {
+        if *remaining == 0 {
+            if !*truncated {
+                node.children.push(ui::TreeItem::new(
+                    format!("{path}/…"),
+                    format!("… {} more", count - index),
+                ));
+                *truncated = true;
+            }
+            break;
+        }
+        *remaining -= 1;
+        let name = name.as_ref();
+        let child_path = format!("{path}/{}", name.replace('~', "~0").replace('/', "~1"));
+        let child_label = if is_scalar(child) {
+            format!("{name}: {}", scalar(child))
+        } else {
+            name.to_owned()
+        };
+        node.children.push(tree_item(
+            child,
+            child_path,
+            child_label,
+            remaining,
+            truncated,
+        ));
+    }
+    node
+}
+
+pub(crate) fn copy_menu() -> ui::Actions {
+    ui::Actions::new().menu("copy")
+}
+
+pub fn block(
+    block: &ContentBlock,
+    key: impl Into<String>,
+    model: &Model,
+    caps: &tern_sdk::Capabilities,
+    scope: &str,
+) -> Node<Msg> {
     let key = key.into();
     match block {
-        ContentBlock::Text(text) => ui::md(text.text.clone()).key(key).into(),
+        ContentBlock::Text(text) => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text.text)
+                && (value.is_object() || value.is_array())
+                && (super::supports(caps, "tree") || super::supports(caps, "table"))
+            {
+                json_display(&value, &text.text, &key, model, caps, scope)
+            } else {
+                ui::md(text.text.clone())
+                    .key(key)
+                    .actions(copy_menu())
+                    .into()
+            }
+        }
         ContentBlock::Image(image) => {
             if let Some(id) = model.content.blobs.get(&image_key(&image.data)) {
                 ui::image()
                     .key(key)
                     .blob(id.clone())
                     .alt("Attached image")
+                    .actions(ui::Actions::new().click("zoom"))
                     .into()
             } else {
                 ui::text("Image unavailable").key(key).into()
             }
         }
-        ContentBlock::ResourceLink(link) => {
-            ui::md(crate::model::resource_link_markdown(&link.name, &link.uri))
-                .key(key)
-                .into()
-        }
+        ContentBlock::ResourceLink(link) => resource_link(&link.name, &link.uri, key).into(),
         ContentBlock::Resource(resource) => match &resource.resource {
             EmbeddedResourceResource::TextResourceContents(text) => {
                 let language = text
@@ -162,17 +359,24 @@ pub fn block(block: &ContentBlock, key: impl Into<String>, model: &Model) -> Nod
                                     .trim_start_matches("x-")
                             })
                     });
-                let mut code = ui::code(text.text.clone()).key("code");
+                let mut code = ui::code(text.text.clone()).key("code").actions(copy_menu());
                 if let Some(lang) = language {
                     code = code.lang(lang.to_owned());
                 }
-                ui::section()
+                let fold_key = format!("{scope}.{key}");
+                let mut section = ui::section()
                     .key(key)
                     .head(text.uri.clone())
                     .collapsible(true)
-                    .collapsed(true)
-                    .child(code)
-                    .into()
+                    .collapsed(model.folds.get(&fold_key).copied().unwrap_or(true))
+                    .on_toggle(move |collapsed| Msg::ToggleFold(fold_key.clone(), collapsed));
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text.text)
+                    && (value.is_object() || value.is_array())
+                    && let Some(data) = json_data(&value, caps)
+                {
+                    section = section.child(data);
+                }
+                section.child(code).into()
             }
             EmbeddedResourceResource::BlobResourceContents(blob) => ui::badge(format!(
                 "Binary resource: {}",
@@ -189,16 +393,28 @@ pub fn block(block: &ContentBlock, key: impl Into<String>, model: &Model) -> Nod
     }
 }
 
-pub fn blocks(blocks: &[ContentBlock], prefix: &str, model: &Model) -> Vec<Node<Msg>> {
+pub fn blocks(
+    blocks: &[ContentBlock],
+    prefix: &str,
+    model: &Model,
+    caps: &tern_sdk::Capabilities,
+    scope: &str,
+) -> Vec<Node<Msg>> {
     blocks
         .iter()
         .enumerate()
-        .map(|(index, item)| block(item, format!("{prefix}.{index}"), model))
+        .map(|(index, item)| block(item, format!("{prefix}.{index}"), model, caps, scope))
         .collect()
 }
 
-/// Attachment links form chips in the user bubble; markdown keeps file URIs clickable.
-pub fn user_blocks(blocks: &[ContentBlock], model: &Model) -> Vec<Node<Msg>> {
+/// Attachment links form chips in the user bubble.
+pub fn user_blocks(
+    blocks: &[ContentBlock],
+    model: &Model,
+    caps: &tern_sdk::Capabilities,
+    scope: &str,
+    edit_id: u64,
+) -> Vec<Node<Msg>> {
     let mut body = Vec::new();
     let mut attachments = ui::row()
         .key("attachments")
@@ -210,13 +426,19 @@ pub fn user_blocks(blocks: &[ContentBlock], model: &Model) -> Vec<Node<Msg>> {
         match block {
             ContentBlock::ResourceLink(link) => {
                 attachments = attachments.child(
-                    ui::md(crate::model::resource_link_markdown(&link.name, &link.uri))
-                        .key(format!("attachment.{i}"))
+                    resource_link(&link.name, &link.uri, format!("attachment.{i}"))
                         .role("omp.user.attachment"),
                 );
                 attached = true;
             }
-            other => body.push(self::block(other, format!("body.{i}"), model)),
+            ContentBlock::Text(_) => {
+                let node = self::block(block, format!("body.{i}"), model, caps, scope);
+                body.push(
+                    node.actions(ui::Actions::new().menu("copy").menu("edit"))
+                        .on_menu("edit", Msg::EditPrompt(edit_id)),
+                );
+            }
+            other => body.push(self::block(other, format!("body.{i}"), model, caps, scope)),
         }
     }
     if attached {
@@ -225,10 +447,27 @@ pub fn user_blocks(blocks: &[ContentBlock], model: &Model) -> Vec<Node<Msg>> {
     body
 }
 
+fn link_href(uri: &str) -> Option<&str> {
+    (uri.starts_with("file://") || uri.starts_with("http://") || uri.starts_with("https://"))
+        .then_some(uri)
+}
+
+fn resource_link(name: &str, uri: &str, key: String) -> ui::Md<Msg> {
+    let mut node = ui::md(crate::model::resource_link_markdown(name, uri)).key(key);
+    if let Some(href) = link_href(uri) {
+        node = node
+            .href(href)
+            .actions(ui::Actions::new().menu("open").menu("copy"));
+    }
+    node
+}
+
 pub fn terminal(
     id: &TerminalId,
     state: Option<&TerminalBuffer>,
     key: impl Into<String>,
+    model: &Model,
+    scope: &str,
 ) -> Node<Msg> {
     let key = key.into();
     if let Some(state) = state {
@@ -245,13 +484,21 @@ pub fn terminal(
                 )
             },
         );
+        let fold_key = format!("{scope}.{key}");
         let mut card = ui::section()
             .key(key)
             .head(state.command.clone())
             .collapsible(true)
+            .collapsed(model.folds.get(&fold_key).copied().unwrap_or(false))
+            .on_toggle(move |collapsed| Msg::ToggleFold(fold_key.clone(), collapsed))
             .on_focus(Msg::TerminalFocus(id.clone()))
             .child(ui::badge(status).key("status"))
-            .child(ui::ansi(state.output.clone()).key("output"));
+            .child(
+                ui::ansi(state.output.clone())
+                    .key("output")
+                    .actions(copy_menu())
+                    .prop("max", serde_json::json!({"h": "12lines"})),
+            );
         if state.truncated {
             card = card.child(ui::text("Earlier output truncated").key("truncated"));
         }
@@ -266,5 +513,75 @@ pub fn terminal(
         card.into()
     } else {
         ui::text(format!("Terminal {id}")).key(key).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn data(value: Value) -> Value {
+        let caps = tern_sdk::Capabilities {
+            kinds: vec!["tree".into(), "table".into()],
+            ..Default::default()
+        };
+        let node = json_data(&value, &caps).expect("structured JSON has a native view");
+        let doc = tern_sdk::reconcile::Doc::from_view(ui::View::new().main(ui::col().child(node)))
+            .unwrap();
+        serde_json::to_value(doc.regions()[0].as_ref().unwrap().wire()).unwrap()["c"][0].clone()
+    }
+
+    #[test]
+    fn nested_json_uses_stable_pointer_ids_and_scalar_labels() {
+        let node = data(json!({"a/b": {"~": [true, null]}}));
+        assert_eq!(node["k"], "tree");
+        let root = &node["p"]["nodes"][0];
+        assert_eq!(root["id"], "#");
+        assert_eq!(root["open"], true);
+        assert_eq!(root["children"][0]["id"], "#/a~1b");
+        assert_eq!(root["children"][0]["label"], "a/b {1}");
+        assert_eq!(root["children"][0]["children"][0]["id"], "#/a~1b/~0");
+        assert_eq!(
+            root["children"][0]["children"][0]["children"][0]["label"],
+            "0: true"
+        );
+    }
+
+    #[test]
+    fn json_table_boundaries_and_mixed_arrays_fall_back_to_tree() {
+        let rows: Vec<_> = (0..200)
+            .map(|i| json!({"first": i, "second": null}))
+            .collect();
+        let table = data(json!(rows));
+        assert_eq!(table["k"], "table");
+        assert_eq!(table["p"]["rows"].as_array().unwrap().len(), 200);
+        assert_eq!(table["p"]["rows"][199]["id"], "199");
+        assert!(
+            table["p"]["cols"][0]["priority"].as_f64().unwrap()
+                > table["p"]["cols"][1]["priority"].as_f64().unwrap()
+        );
+        assert_eq!(data(json!([{"x": 1}, {"x": [2]}]))["k"], "tree");
+        assert_eq!(
+            data(json!((0..201).map(|i| json!({"x": i})).collect::<Vec<_>>()))["k"],
+            "tree"
+        );
+        assert_eq!(
+            data(json!([{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9}]))["k"],
+            "tree"
+        );
+    }
+
+    #[test]
+    fn large_json_tree_limits_rows_and_marks_omitted_items() {
+        let node = data(json!({"items": (0..600).collect::<Vec<_>>()}));
+        let items = &node["p"]["nodes"][0]["children"][0]["children"];
+        assert!(items.as_array().unwrap().len() <= 500);
+        assert!(
+            items.as_array().unwrap().last().unwrap()["label"]
+                .as_str()
+                .unwrap()
+                .contains("more")
+        );
     }
 }

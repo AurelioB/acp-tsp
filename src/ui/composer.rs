@@ -53,6 +53,13 @@ impl Composer {
         self.text.insert_str(byte, value);
         self.cursor += value.chars().count();
     }
+    /// Replace the draft as a single undoable edit (for editing a sent prompt).
+    pub fn replace(&mut self, text: &str) {
+        self.save();
+        self.text.clear();
+        self.text.push_str(text);
+        self.cursor = text.chars().count();
+    }
 
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
@@ -199,5 +206,14 @@ mod tests {
         assert_eq!(c.text, "one");
         assert!(c.down());
         assert_eq!(c.text, "draft");
+    }
+    #[test]
+    fn replacing_a_draft_can_be_undone() {
+        let mut c = Composer::default();
+        c.insert("unsent");
+        c.replace("older 😀");
+        assert_eq!((c.text.as_str(), c.utf16_cursor()), ("older 😀", 8));
+        assert!(c.undo());
+        assert_eq!(c.text, "unsent");
     }
 }

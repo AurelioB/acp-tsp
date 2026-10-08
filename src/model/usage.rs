@@ -50,6 +50,8 @@ pub struct UsageReport {
     pub plan: Option<String>,
     pub resets: Option<ResetCredits>,
     pub error: Option<String>,
+    /// Counts-only local history, loaded when the dashboard opens or refreshes.
+    pub history: Option<crate::usage_history::History>,
 }
 
 /// Claude's local `/usage` markdown. Returns `None` when limits are absent.

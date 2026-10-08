@@ -140,7 +140,10 @@ expression: "wire(&model)[\"main\"]"
           "p": {
             "key": "body.0",
             "blob": "sha256-image",
-            "alt": "Attached image"
+            "alt": "Attached image",
+            "actions": {
+              "click": "zoom"
+            }
           }
         },
         {
@@ -159,6 +162,11 @@ expression: "wire(&model)[\"main\"]"
               "p": {
                 "text": "fn main() {}",
                 "key": "code",
+                "actions": {
+                  "menu": [
+                    "copy"
+                  ]
+                },
                 "lang": "rs"
               }
             }
@@ -169,7 +177,14 @@ expression: "wire(&model)[\"main\"]"
           "k": "md",
           "p": {
             "text": "[source](file:///src/main.rs)",
-            "key": "body.2"
+            "key": "body.2",
+            "href": "file:///src/main.rs",
+            "actions": {
+              "menu": [
+                "open",
+                "copy"
+              ]
+            }
           }
         }
       ]

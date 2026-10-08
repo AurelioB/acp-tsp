@@ -157,6 +157,11 @@ expression: "wire(&model)[\"main\"]"
             "text": "first second",
             "key": "terminal.output",
             "role": "omp.tool.bash.output",
+            "actions": {
+              "menu": [
+                "copy"
+              ]
+            },
             "follow": false
           }
         }

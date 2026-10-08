@@ -16,3 +16,4 @@ pub mod model;
 pub mod quirks;
 pub mod tern_settings;
 pub mod ui;
+pub mod usage_history;
