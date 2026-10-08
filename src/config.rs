@@ -3,6 +3,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use agent_client_protocol::schema::v1::{
+    EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio,
+};
 use anyhow::{Context, bail};
 use serde::Deserialize;
 
@@ -12,6 +15,7 @@ use crate::launch::AgentLaunch;
 #[serde(default)]
 pub struct Config {
     pub default_agent: Option<String>,
+    pub mcp_servers: Vec<McpServerConfig>,
     pub agents: BTreeMap<String, AgentOverride>,
 }
 
@@ -21,6 +25,66 @@ pub struct AgentOverride {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub env: BTreeMap<String, String>,
+    pub mcp_servers: Vec<McpServerConfig>,
+}
+
+/// TOML transport entry. Stdio is the default when `type` is absent.
+#[derive(Clone, Debug, Deserialize)]
+pub struct McpServerConfig {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    name: String,
+    command: Option<PathBuf>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    url: Option<String>,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+}
+
+impl McpServerConfig {
+    fn resolve(&self) -> anyhow::Result<McpServer> {
+        let headers = self
+            .headers
+            .iter()
+            .map(|(name, value)| HttpHeader::new(name, value))
+            .collect();
+        Ok(match self.kind.as_deref().unwrap_or("stdio") {
+            "stdio" => {
+                let command = self
+                    .command
+                    .as_ref()
+                    .context("stdio MCP server needs command")?;
+                McpServer::Stdio(
+                    McpServerStdio::new(&self.name, command)
+                        .args(self.args.clone())
+                        .env(
+                            self.env
+                                .iter()
+                                .map(|(name, value)| EnvVariable::new(name, value))
+                                .collect(),
+                        ),
+                )
+            }
+            "http" => McpServer::Http(
+                McpServerHttp::new(
+                    &self.name,
+                    self.url.as_ref().context("http MCP server needs url")?,
+                )
+                .headers(headers),
+            ),
+            "sse" => McpServer::Sse(
+                McpServerSse::new(
+                    &self.name,
+                    self.url.as_ref().context("sse MCP server needs url")?,
+                )
+                .headers(headers),
+            ),
+            kind => bail!("unknown MCP transport {kind:?}"),
+        })
+    }
 }
 
 impl Config {
@@ -88,6 +152,19 @@ impl Config {
         }
         names.sort();
         names
+    }
+    /// Global MCP servers followed by selected-agent servers.
+    pub fn mcp_servers(&self, agent: &str) -> anyhow::Result<Vec<McpServer>> {
+        self.mcp_servers
+            .iter()
+            .chain(
+                self.agents
+                    .get(agent)
+                    .into_iter()
+                    .flat_map(|config| config.mcp_servers.iter()),
+            )
+            .map(McpServerConfig::resolve)
+            .collect()
     }
 }
 
@@ -208,5 +285,41 @@ mod tests {
         let launch = config.resolve(Some("custom")).unwrap();
         assert_eq!(launch.command, "agent");
         assert_eq!(launch.args, ["--stdio"]);
+    }
+    #[test]
+    fn mcp_servers_merge_global_and_per_agent_without_leaking_to_others() {
+        let config: Config = toml::from_str(
+            r#"
+            [[mcp_servers]]
+            name = "global"
+            command = "/bin/echo"
+            args = ["first"]
+            env = { TOKEN = "secret" }
+
+            [[agents.codex.mcp_servers]]
+            type = "http"
+            name = "remote"
+            url = "https://example.test/mcp"
+            headers = { Authorization = "Bearer key" }
+        "#,
+        )
+        .unwrap();
+        let codex = config.mcp_servers("codex").unwrap();
+        assert_eq!(codex.len(), 2);
+        assert!(
+            matches!(&codex[0], McpServer::Stdio(server) if server.args == ["first"] && server.env[0].value == "secret")
+        );
+        assert!(
+            matches!(&codex[1], McpServer::Http(server) if server.headers[0].name == "Authorization")
+        );
+        assert_eq!(config.mcp_servers("claude").unwrap().len(), 1);
+        assert!(
+            toml::from_str::<Config>("[[mcp_servers]]\nname='missing'")
+                .unwrap()
+                .mcp_servers("claude")
+                .unwrap_err()
+                .to_string()
+                .contains("command")
+        );
     }
 }

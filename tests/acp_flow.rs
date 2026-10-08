@@ -61,7 +61,7 @@ async fn streams_chunks_then_ends_turn_and_queues_second_prompt() {
                 assert_eq!(request.protocol_version, ProtocolVersion::V1);
                 assert!(request.client_capabilities.fs.read_text_file);
                 assert!(request.client_capabilities.fs.write_text_file);
-                assert!(!request.client_capabilities.terminal);
+                assert!(request.client_capabilities.terminal);
                 responder.respond(InitializeResponse::new(ProtocolVersion::V1))
             },
             agent_client_protocol::on_receive_request!(),

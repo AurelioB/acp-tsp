@@ -2,10 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
-    ClientCapabilities, FileSystemCapabilities, Implementation, InitializeRequest,
-    SessionNotification,
-};
+use agent_client_protocol::schema::v1::{Implementation, InitializeRequest, SessionNotification};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
@@ -16,7 +13,7 @@ use acp_tsp::{
     acp, bus,
     config::Config,
     event::UiCmd,
-    launch::{AgentLaunch, SessionOptions},
+    launch::{AgentLaunch, SessionOptions, StartSession},
     tern_settings, ui,
 };
 
@@ -35,6 +32,18 @@ struct Cli {
     /// Session working directory.
     #[arg(long, global = true)]
     cwd: Option<PathBuf>,
+    /// Load a session (replays history when supported).
+    #[arg(long, global = true, group = "session_start")]
+    load: Option<String>,
+    /// Resume a session without replay.
+    #[arg(long, global = true, group = "session_start")]
+    resume: Option<String>,
+    /// Continue the most recently updated session in this directory.
+    #[arg(long = "continue", global = true, group = "session_start")]
+    continue_session: bool,
+    /// Additional workspace root (repeatable, must be an existing directory).
+    #[arg(long = "add-dir", global = true)]
+    add_dirs: Vec<PathBuf>,
     /// Agent command and arguments (takes precedence over --agent).
     #[arg(last = true)]
     command: Vec<String>,
@@ -80,8 +89,9 @@ fn main() -> anyhow::Result<()> {
 fn run_session(cli: Cli) -> anyhow::Result<()> {
     let _log_guard = init_logging()?;
     let cwd = canonical_cwd(cli.cwd.as_deref())?;
+    let config = Config::load()?;
     let launch = if cli.command.is_empty() {
-        Config::load()?.resolve(cli.agent.as_deref())?
+        config.resolve(cli.agent.as_deref())?
     } else {
         let command = &cli.command[0];
         let name = Path::new(command)
@@ -95,18 +105,26 @@ fn run_session(cli: Cli) -> anyhow::Result<()> {
             env: Default::default(),
         }
     };
+    let mut options = SessionOptions::new(cwd.clone());
+    options.start = match (cli.load, cli.resume, cli.continue_session) {
+        (Some(id), None, false) => StartSession::Load(id.into()),
+        (None, Some(id), false) => StartSession::Resume(id.into()),
+        (None, None, true) => StartSession::Latest,
+        _ => StartSession::New,
+    };
+    options.additional_dirs = cli
+        .add_dirs
+        .iter()
+        .map(|dir| canonical_cwd(Some(dir)))
+        .collect::<anyhow::Result<_>>()?;
+    options.mcp_servers = config.mcp_servers(&launch.name)?;
     let (waker, wake_fd) = bus::wake_pair()?;
     let (events_tx, events_rx) = bus::event_channel(waker);
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let acp_task = runtime.spawn(acp::run(
-        launch.clone(),
-        SessionOptions::new(cwd.clone()),
-        events_tx,
-        cmd_rx,
-    ));
+    let acp_task = runtime.spawn(acp::run(launch.clone(), options, events_tx, cmd_rx));
     let ui_result = ui::run(
         ui::UiOptions {
             agent: launch.name.clone(),
@@ -250,12 +268,9 @@ fn probe(agent_name: Option<&str>) -> anyhow::Result<()> {
                 agent_client_protocol::on_receive_notification!(),
             )
             .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
-                let capabilities = ClientCapabilities::new().fs(FileSystemCapabilities::new()
-                    .read_text_file(true)
-                    .write_text_file(true));
                 let request = InitializeRequest::new(ProtocolVersion::V1)
                     .client_info(Implementation::new("acp-tsp", env!("CARGO_PKG_VERSION")))
-                    .client_capabilities(capabilities);
+                    .client_capabilities(acp::capabilities());
                 let response = connection.send_request(request).block_task().await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
                 Ok(())
@@ -264,4 +279,34 @@ fn probe(agent_name: Option<&str>) -> anyhow::Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_start_flags_are_mutually_exclusive() {
+        for pair in [
+            ["--load", "one", "--resume", "two"],
+            ["--load", "one", "--continue", ""],
+            ["--resume", "one", "--continue", ""],
+        ] {
+            let args = std::iter::once("acp-tsp")
+                .chain(pair.into_iter().filter(|value| !value.is_empty()));
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        assert_eq!(
+            Cli::try_parse_from(["acp-tsp", "--load", "s"])
+                .unwrap()
+                .load
+                .as_deref(),
+            Some("s")
+        );
+        assert!(
+            Cli::try_parse_from(["acp-tsp", "--continue"])
+                .unwrap()
+                .continue_session
+        );
+    }
 }

@@ -17,6 +17,11 @@ acp-tsp agents
 acp-tsp setup-tern --agent claude
 ```
 
+Use `--load ID` to replay an existing session (falling back to resume if replay is unsupported),
+`--resume ID` to resume without replay, or `--continue` to pick the most recently updated session
+in the working directory. These flags are mutually exclusive. Repeat `--add-dir DIR` to expose
+additional existing workspace directories when the agent supports them.
+
 `setup-tern` updates `agent_command` in Tern's settings, making a timestamped backup first. It leaves `new_blocks` unchanged unless passed `--new-blocks-agent`; `--settings PATH` overrides settings location and `--print` prints the JSON snippet without writing. On Linux the default settings location is `$XDG_CONFIG_HOME/tern/settings.json` (or `~/.config/tern/settings.json`), a best-known default that may vary by Tern installation. macOS uses `~/Library/Application Support/Tern/settings.json`.
 
 ## Agent configuration
@@ -31,6 +36,28 @@ command = "npx"
 args = ["-y", "@agentclientprotocol/claude-agent-acp@0.87.0"]
 env = { EXAMPLE_SETTING = "value" }
 ```
+
+MCP servers may be configured globally or per agent; per-agent entries are appended to the
+global list. HTTP and SSE transports require matching agent capabilities; unsupported servers
+are skipped with an error shown in the UI.
+
+```toml
+[[mcp_servers]]
+name = "local-tools"
+command = "my-mcp-server"
+args = ["--stdio"]
+env = { TOKEN = "example" }
+
+[[agents.claude.mcp_servers]]
+type = "http" # or "sse"
+name = "remote-tools"
+url = "https://example.invalid/mcp"
+headers = { Authorization = "Bearer example" }
+```
+
+Terminal commands requested by the agent inherit the user's privileges. Session roots constrain
+the *working directory* only: terminal commands are **not sandboxed** and can access files
+outside those roots.
 
 Built-in adapters are pinned: Claude `@agentclientprotocol/claude-agent-acp@0.87.0`, Codex `@agentclientprotocol/codex-acp@2.1.1`. The agy ACP server is not bundled; installation support is planned for Stage 3.
 
