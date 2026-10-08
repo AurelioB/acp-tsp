@@ -124,7 +124,8 @@ fn run_session(cli: Cli) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let acp_task = runtime.spawn(acp::run(launch.clone(), options, events_tx, cmd_rx));
+    let mut acp_task = None;
+    let agent_launch = launch.clone();
     let ui_result = ui::run(
         ui::UiOptions {
             agent: launch.name.clone(),
@@ -134,12 +135,17 @@ fn run_session(cli: Cli) -> anyhow::Result<()> {
         events_rx,
         wake_fd,
         cmd_tx.clone(),
+        || {
+            acp_task = Some(runtime.spawn(acp::run(agent_launch, options, events_tx, cmd_rx)));
+        },
     );
     let _ = cmd_tx.send(UiCmd::Shutdown);
-    let finished =
-        runtime.block_on(async { tokio::time::timeout(Duration::from_secs(2), acp_task).await });
-    if finished.is_err() {
-        tracing::warn!("ACP task did not stop within two seconds");
+    if let Some(task) = acp_task {
+        let finished =
+            runtime.block_on(async { tokio::time::timeout(Duration::from_secs(2), task).await });
+        if finished.is_err() {
+            tracing::warn!("ACP task did not stop within two seconds");
+        }
     }
     runtime.shutdown_timeout(Duration::from_secs(2));
     match ui_result? {

@@ -109,6 +109,7 @@ fn drive(script: &[u8], event: Option<BridgeEvent>) -> (String, Vec<UiCmd>) {
         },
         events,
         cmds,
+        || {},
     )
     .unwrap();
     let output = String::from_utf8(pipes.borrow().outgoing.clone()).unwrap();

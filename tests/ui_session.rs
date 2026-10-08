@@ -105,7 +105,8 @@ fn scripted_handshake_prompt_and_agent_frame() {
                 },
             },
             rx,
-            cmd_tx
+            cmd_tx,
+            || {}
         )
         .unwrap(),
         UiExit::Quit
@@ -148,7 +149,8 @@ fn closed_agent_stays_visible_until_ctrl_d() {
                 },
             },
             events,
-            cmds
+            cmds,
+            || {}
         )
         .unwrap(),
         UiExit::Quit
@@ -195,6 +197,7 @@ fn answering_a_permission_closes_its_dialog() {
         },
         rx,
         cmd_tx,
+        || {},
     )
     .unwrap();
     let UiCmd::Permission { id, outcome } = cmd_rx.try_recv().unwrap() else {

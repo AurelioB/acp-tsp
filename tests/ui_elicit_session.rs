@@ -98,6 +98,7 @@ fn edit_fields_and_accept_emit_typed_content() {
         },
         events,
         cmds,
+        || {},
     )
     .unwrap();
     let UiCmd::Elicitation { id, response } = receiver.try_recv().unwrap() else {

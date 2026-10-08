@@ -86,10 +86,11 @@ pub fn run(
     events: EventRx,
     wake: WakeFd,
     cmds: UnboundedSender<UiCmd>,
+    on_connected: impl FnOnce(),
 ) -> anyhow::Result<UiExit> {
     let term = WakeTerm::open(wake)?;
     let controller = term.termios_controller();
-    run_with_controller(term, options, events, cmds, Some(controller))
+    run_with_controller(term, options, events, cmds, Some(controller), on_connected)
 }
 
 /// Same session loop with an injectable terminal for scripted tests.
@@ -99,8 +100,9 @@ pub fn run_with_terminal(
     options: UiOptions,
     events: EventRx,
     cmds: UnboundedSender<UiCmd>,
+    on_connected: impl FnOnce(),
 ) -> anyhow::Result<UiExit> {
-    run_with_controller(term, options, events, cmds, None)
+    run_with_controller(term, options, events, cmds, None, on_connected)
 }
 
 fn run_with_controller(
@@ -109,6 +111,7 @@ fn run_with_controller(
     events: EventRx,
     cmds: UnboundedSender<UiCmd>,
     controller: Option<TermiosController>,
+    on_connected: impl FnOnce(),
 ) -> anyhow::Result<UiExit> {
     let Some(mut session) = Session::<Msg>::with_terminal(
         term,
@@ -127,6 +130,7 @@ fn run_with_controller(
             .title(options.agent)
             .role("acp-tsp.session"),
     )?;
+    on_connected();
     let mut model = Model::default();
     let mut composer = Composer::default();
     let mut input_state = InputState::default();
