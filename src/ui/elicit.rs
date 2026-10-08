@@ -37,6 +37,7 @@ pub struct FormState {
     pub errors: BTreeMap<String, String>,
     pub focus: Option<String>,
     pub cursor: usize,
+    pub option_cursor: usize,
 }
 
 impl FormState {
@@ -157,6 +158,124 @@ impl FormState {
         }
         self.errors.remove(name);
         true
+    }
+    pub fn choose(&mut self, schema: &ElicitationSchema, name: &str, value: &str) -> bool {
+        let Some(property) = schema.properties.get(name) else {
+            return false;
+        };
+        match property {
+            Property::String(p) => {
+                let valid = p
+                    .enum_values
+                    .as_ref()
+                    .is_some_and(|choices| choices.iter().any(|item| item == value))
+                    || p.one_of
+                        .as_ref()
+                        .is_some_and(|choices| choices.iter().any(|item| item.value == value));
+                if !valid {
+                    return false;
+                }
+                self.values.insert(name.into(), Value::String(value.into()));
+            }
+            Property::Array(p) => {
+                let valid = match &p.items {
+                    MultiSelectItems::String(items) => {
+                        items.values.iter().any(|item| item == value)
+                    }
+                    MultiSelectItems::Titled(items) => {
+                        items.options.iter().any(|item| item.value == value)
+                    }
+                    _ => false,
+                };
+                if !valid {
+                    return false;
+                }
+                let selected = self
+                    .values
+                    .entry(name.into())
+                    .or_insert_with(|| Value::StringArray(Vec::new()));
+                let Value::StringArray(selected) = selected else {
+                    return false;
+                };
+                if let Some(index) = selected.iter().position(|item| item == value) {
+                    selected.remove(index);
+                } else {
+                    selected.push(value.into());
+                }
+            }
+            _ => return false,
+        }
+        self.errors.remove(name);
+        true
+    }
+
+    /// Arrow keys move through a choice field; Space toggles a multi-choice row.
+    pub fn option_key(&mut self, schema: &ElicitationSchema, key: &tern_sdk::keys::Key) -> bool {
+        let Some((name, property)) = schema.properties.iter().find(|(_, property)| {
+            matches!(property, Property::String(p) if p.enum_values.is_some() || p.one_of.is_some())
+                || matches!(property, Property::Array(_))
+        }) else {
+            return false;
+        };
+        let values = match property {
+            Property::String(p) => p
+                .one_of
+                .as_ref()
+                .map(|choices| choices.len())
+                .or_else(|| p.enum_values.as_ref().map(Vec::len))
+                .unwrap_or(0),
+            Property::Array(p) => match &p.items {
+                MultiSelectItems::String(items) => items.values.len(),
+                MultiSelectItems::Titled(items) => items.options.len(),
+                _ => 0,
+            },
+            _ => 0,
+        };
+        if values == 0 {
+            return false;
+        }
+        let moving = key.is("up") || key.is("down");
+        if key.is("up") {
+            self.option_cursor = self.option_cursor.saturating_sub(1);
+        } else if key.is("down") {
+            self.option_cursor = (self.option_cursor + 1).min(values - 1);
+        } else if !key.is("space") && !key.is("enter") {
+            return false;
+        }
+        let value = match property {
+            Property::String(p) => p
+                .one_of
+                .as_ref()
+                .and_then(|items| {
+                    items
+                        .get(self.option_cursor)
+                        .map(|item| item.value.as_str())
+                })
+                .or_else(|| {
+                    p.enum_values
+                        .as_ref()
+                        .and_then(|items| items.get(self.option_cursor).map(String::as_str))
+                }),
+            Property::Array(p) => match &p.items {
+                MultiSelectItems::String(items) => {
+                    items.values.get(self.option_cursor).map(String::as_str)
+                }
+                MultiSelectItems::Titled(items) => items
+                    .options
+                    .get(self.option_cursor)
+                    .map(|item| item.value.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(value) = value else { return false };
+        if matches!(property, Property::Array(_)) && !key.is("space") {
+            return moving;
+        }
+        if key.is("enter") && self.values.contains_key(name) {
+            return false;
+        }
+        self.choose(schema, name, value)
     }
 
     pub fn accept(&mut self, id: PendingId, request: &CreateElicitationRequest) -> Option<UiCmd> {
@@ -334,23 +453,48 @@ pub fn normalized(
         .collect()
 }
 
+fn action(label: &str, key: &str, message: Msg, primary: bool) -> Node<Msg> {
+    let mut row = ui::row()
+        .key(label.to_lowercase())
+        .role("omp.btn")
+        .prop("gap", "xs")
+        .on_click(message)
+        .child(ui::text(label));
+    if !key.is_empty() {
+        row = row.child(ui::kbd([key]));
+    }
+    if primary {
+        row.tone("accent").into()
+    } else {
+        row.into()
+    }
+}
+
 pub fn dialog(id: PendingId, request: &CreateElicitationRequest, state: &FormState) -> Node<Msg> {
-    // A modal overlay: a plain card in `layer` floats over the transcript without a backdrop.
+    // Bottom ask sheet: the transcript stays visible while the user answers.
     let mut card = ui::overlay()
-        .modal(true)
+        .anchor(ui::Anchor::Bottom)
         .size(ui::OverlaySize::Lg)
         .key("elicitation")
-        .head("Agent request")
-        .child(ui::md(request.message.clone()).key("message"));
+        .role("omp.editor")
+        .head("Agent question")
+        .child(
+            ui::md(request.message.clone())
+                .key("message")
+                .role("omp.ask.question"),
+        );
     match &request.mode {
         ElicitationMode::Url(url) => {
             card = card.child(
                 ui::md(crate::model::resource_link_markdown("Open link", &url.url)).key("url"),
             );
             card = card.child(
-                html::button("Done")
-                    .key("accept")
-                    .on_click(Msg::ElicitAccept(id)),
+                ui::row()
+                    .key("actions")
+                    .role("omp.actions")
+                    .child(ui::spacer().prop("grow", 1))
+                    .child(action("Cancel", "escape", Msg::ElicitCancel(id), false))
+                    .child(action("Done", "enter", Msg::ElicitAccept(id), true)),
             );
         }
         ElicitationMode::Form(form) => {
@@ -387,11 +531,21 @@ pub fn dialog(id: PendingId, request: &CreateElicitationRequest, state: &FormSta
                                     .map(|s| (s.clone(), s))
                                     .collect()
                             });
+                        let mut options = ui::list()
+                            .key("options")
+                            .role("omp.ask.options")
+                            .selected(format!(
+                                "layer.elicitation.form.{name}.options.option.{}",
+                                state.option_cursor
+                            ));
                         for (index, (value, title)) in choices.into_iter().enumerate() {
-                            field = field.child(html::label().key(format!("option.{index}"))
-                                .child(html::radio(name, &value).checked(matches!(state.values.get(name), Some(Value::String(s)) if s == &value))
-                                    .on_change(|change| Msg::ElicitChange(change.clone()))).child(html::span(title)));
+                            options = options.child(ui::item(title)
+                                .key(format!("option.{index}"))
+                                .role("omp.ask.option")
+                                .icon(if matches!(state.values.get(name), Some(Value::String(s)) if s == &value) { "check" } else { "circle" })
+                                .on_click(Msg::ElicitChoice(name.clone(), value)));
                         }
+                        field = field.child(options);
                     }
                     Property::Array(p) => {
                         let choices: Vec<_> = match &p.items {
@@ -407,11 +561,21 @@ pub fn dialog(id: PendingId, request: &CreateElicitationRequest, state: &FormSta
                                 .collect(),
                             _ => Vec::new(),
                         };
+                        let mut options = ui::list()
+                            .key("options")
+                            .role("omp.ask.options")
+                            .selected(format!(
+                                "layer.elicitation.form.{name}.options.option.{}",
+                                state.option_cursor
+                            ));
                         for (index, (value, title)) in choices.into_iter().enumerate() {
-                            field = field.child(html::label().key(format!("option.{index}"))
-                                .child(html::checkbox(name, &value).checked(matches!(state.values.get(name), Some(Value::StringArray(items)) if items.contains(&value)))
-                                    .on_change(|change| Msg::ElicitChange(change.clone()))).child(html::span(title)));
+                            options = options.child(ui::item(title)
+                                .key(format!("option.{index}"))
+                                .role("omp.ask.check")
+                                .icon(if matches!(state.values.get(name), Some(Value::StringArray(items)) if items.contains(&value)) { "check" } else { "square" })
+                                .on_click(Msg::ElicitChoice(name.clone(), value)));
                         }
+                        field = field.child(options);
                     }
                     Property::Boolean(_) => {
                         field = field.child(
@@ -457,25 +621,18 @@ pub fn dialog(id: PendingId, request: &CreateElicitationRequest, state: &FormSta
                 }
                 fields = fields.child(field);
             }
-            card = card
-                .child(fields)
-                .child(
-                    html::button("Accept")
-                        .key("accept")
-                        .on_click(Msg::ElicitAccept(id)),
-                )
-                .child(
-                    html::button("Decline")
-                        .key("decline")
-                        .on_click(Msg::ElicitDecline(id)),
-                );
+            card = card.child(fields).child(
+                ui::row()
+                    .key("actions")
+                    .role("omp.actions")
+                    .prop("gap", "sm")
+                    .child(ui::spacer().prop("grow", 1))
+                    .child(action("Decline", "", Msg::ElicitDecline(id), false))
+                    .child(action("Cancel", "escape", Msg::ElicitCancel(id), false))
+                    .child(action("Accept", "enter", Msg::ElicitAccept(id), true)),
+            );
         }
         _ => card = card.child(ui::text("Unsupported elicitation mode")),
     }
-    card = card.child(
-        html::button("Cancel")
-            .key("cancel")
-            .on_click(Msg::ElicitCancel(id)),
-    );
     ui::col().child(card).into()
 }

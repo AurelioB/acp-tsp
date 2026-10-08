@@ -23,6 +23,7 @@ pub fn render(model: &Model) -> impl Into<ui::Node<Msg>> {
     ui::prefs()
         .key("config")
         .title("Session configuration")
+        .lead("Model, thinking effort and agent behavior for this session")
         .sections(vec![PrefsSection {
             id: Some("options".into()),
             title: Some("Agent settings".into()),

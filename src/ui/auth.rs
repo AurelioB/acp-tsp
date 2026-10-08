@@ -6,7 +6,7 @@ use agent_client_protocol::schema::v1::AuthMethod;
 use tern_sdk::{
     Session,
     keys::Key,
-    ui::{self, PickerItem},
+    ui::{self, PickerAction, PickerItem},
 };
 
 use crate::{bus::TermiosController, launch::AgentLaunch};
@@ -17,6 +17,27 @@ pub(super) fn picker(auth: &crate::model::AuthPrompt, selected: usize) -> impl I
     let mut picker = ui::picker()
         .key("auth")
         .title("Authenticate")
+        .icon("key")
+        .noun("methods")
+        .size(ui::PickerSize::Md)
+        .layout(ui::PickerLayout::Rows)
+        .preview(ui::PickerPreview::Side)
+        .actions(vec![
+            PickerAction {
+                id: "choose".into(),
+                label: Some("Continue".into()),
+                keys: vec!["enter".into()],
+                primary: Some(true),
+                ..PickerAction::default()
+            },
+            PickerAction {
+                id: "close".into(),
+                label: Some("Quit".into()),
+                keys: vec!["ctrl".into(), "d".into()],
+                end: Some(true),
+                ..PickerAction::default()
+            },
+        ])
         .items(
             auth.methods
                 .iter()
@@ -28,6 +49,8 @@ pub(super) fn picker(auth: &crate::model::AuthPrompt, selected: usize) -> impl I
                 })
                 .collect::<Vec<_>>(),
         )
+        .on_action("choose", Msg::AuthActivate(format!("method:{selected}")))
+        .on_action("close", Msg::AuthQuit)
         .on_select(|id| Msg::AuthSelect(id.to_owned()))
         .on_activate(|id| Msg::AuthActivate(id.to_owned()));
     if auth.methods.get(selected).is_some() {

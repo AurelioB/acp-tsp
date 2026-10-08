@@ -6,7 +6,7 @@ use agent_client_protocol::schema::v1::{
 };
 use tern_sdk::{
     keys::Key,
-    ui::{self, Anchor, OrderEntry, PickerAction, PickerItem},
+    ui::{self, Anchor, PickerAction, PickerItem},
 };
 
 use crate::{
@@ -57,13 +57,15 @@ struct Row {
     detail: String,
 }
 
-/// A client command typed or pasted in full (`/config`): what Enter does instead of sending
-/// it as a prompt. An agent command of the same name wins, so agent commands always reach
-/// the agent.
+/// A client command typed or pasted in full (`/config`). Agent commands with the same
+/// name take precedence, except `/model`, which explicitly opens the model picker.
 pub fn typed_client_command(text: &str, model: &Model) -> Option<Choice> {
     let name = text.trim().strip_prefix('/')?;
     if name.is_empty() || name.contains(char::is_whitespace) {
         return None;
+    }
+    if name == "model" && has_category(model, SessionConfigOptionCategory::Model) {
+        return Some(Choice::Open(Kind::Model, None));
     }
     let mut palette = Palette::new(Kind::Commands);
     let rows = palette.rows(model);
@@ -179,7 +181,7 @@ impl Palette {
                         rows.push(Row {
                             id: format!("client:{name}"),
                             label: format!("/{name}"),
-                            detail: format!("acp-tsp · {detail}"),
+                            detail: detail.into(),
                         });
                     }
                 }
@@ -323,7 +325,7 @@ impl Palette {
                 .key("list")
                 .selected(
                     rows.get(self.selected)
-                        .map(|row| row.id.clone())
+                        .map(|row| format!("layer.complete.0.list.{}", row.id))
                         .unwrap_or_default(),
                 )
                 .empty("No items")
@@ -351,24 +353,6 @@ impl Palette {
                 .anchor(Anchor::Caret("dock.ed".into()))
                 .child(ui::col().role("omp.select").child(list))
                 .into();
-        }
-        let mut order = Vec::new();
-        let mut group = "";
-        for row in &rows {
-            let next = if row.id.starts_with("agent:") {
-                "Agent commands"
-            } else {
-                "Client commands"
-            };
-            if self.kind == Kind::Commands && next != group {
-                order.push(OrderEntry::Group {
-                    group: next.into(),
-                    label: next.into(),
-                    count: None,
-                });
-                group = next;
-            }
-            order.push(OrderEntry::Item(row.id.clone()));
         }
         let selected = rows.get(self.selected).map(|row| row.id.clone());
         let (title, icon, noun) = match self.kind {
@@ -399,7 +383,6 @@ impl Palette {
                     })
                     .collect::<Vec<_>>(),
             )
-            .order(order)
             .actions(vec![
                 PickerAction {
                     id: "choose".into(),
@@ -490,7 +473,12 @@ impl Palette {
         if self.provider_editor.is_some() {
             return Choice::Changed;
         }
-        if let Some(i) = self.rows(model).iter().position(|row| row.id == id) {
+        if let Some(i) = self.rows(model).iter().position(|row| {
+            row.id == id
+                || id
+                    .strip_suffix(&row.id)
+                    .is_some_and(|prefix| prefix.ends_with('.'))
+        }) {
             self.selected = i;
             if activate {
                 self.activate(model, false)

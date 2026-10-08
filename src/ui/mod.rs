@@ -8,6 +8,7 @@ pub mod elicit;
 mod ext;
 mod input;
 pub mod palette;
+pub mod permission;
 pub mod prefs;
 #[cfg(feature = "unstable_llm_providers")]
 mod providers;
@@ -16,7 +17,8 @@ pub mod view;
 use std::path::PathBuf;
 
 use agent_client_protocol::schema::v1::{
-    AuthMethodId, CreateElicitationResponse, ElicitationAction, PermissionOptionId, TerminalId,
+    AuthMethodId, CreateElicitationResponse, ElicitationAction, PermissionOptionId,
+    RequestPermissionOutcome, TerminalId,
 };
 use tern_sdk::{
     Input, Options, Session, SurfaceOptions,
@@ -60,11 +62,17 @@ pub enum Msg {
     Undo,
     Focus,
     Permission(u64, PermissionOptionId),
+    PermissionDismiss(u64),
     Authenticate(AuthMethodId),
     PickerSelect(String),
     PickerActivate(String),
+    PickerConfirm,
+    PickerClose,
+    ModelPicker,
+    EffortPicker,
     AuthSelect(String),
     AuthActivate(String),
+    AuthQuit,
     ConfigChange(Option<String>, serde_json::Value),
     #[cfg(feature = "unstable_llm_providers")]
     ProviderChange(Option<String>, serde_json::Value),
@@ -73,6 +81,7 @@ pub enum Msg {
     AttachSelect(String),
     ElicitEdit(wire::Edit),
     ElicitChange(wire::Change),
+    ElicitChoice(String, String),
     ElicitFocus(String),
     ElicitAccept(u64),
     ElicitDecline(u64),
@@ -189,9 +198,8 @@ fn run_with_controller(
             || model.ext.account_details;
         let composer_blocked = dialog_before
             || model.exited.is_some()
-            || picker.open
-            || palette.is_some()
-            || config_open;
+            || config_open
+            || palette.as_ref().is_some_and(|p| p.kind != Kind::Commands);
         let action = match input {
             Input::Key(key) => {
                 // Printable keys are user content: log only named keys.
@@ -207,14 +215,9 @@ fn run_with_controller(
                 } else if picker.open && model.dialogs.front().is_none() && model.auth.is_none() {
                     if key.is("escape") {
                         picker.open = false;
-                        session.focus(sf, Some("dock.ed"))?;
                         Action::Changed
-                    } else if key.is("enter") {
-                        if let Some(path) = picker.matches().get(picker.selected) {
-                            composer.insert(&attach::mention(path));
-                        }
-                        picker.open = false;
-                        session.focus(sf, Some("dock.ed"))?;
+                    } else if key.is("enter") || key.is("tab") {
+                        picker.accept_selected(&mut composer);
                         Action::Changed
                     } else if key.is("up") {
                         picker.selected = picker.selected.saturating_sub(1);
@@ -223,16 +226,11 @@ fn run_with_controller(
                         picker.selected =
                             (picker.selected + 1).min(picker.matches().len().saturating_sub(1));
                         Action::Changed
-                    } else if key.is("backspace") {
-                        picker.query.pop();
-                        picker.selected = 0;
-                        Action::Changed
-                    } else if let Some(text) = key.typed() {
-                        picker.query.push_str(text);
-                        picker.selected = 0;
-                        Action::Changed
                     } else {
-                        Action::None
+                        let action = input_state.key(&key, &mut model, &mut composer);
+                        picker.sync(&composer.text, composer.cursor);
+                        picker.selected = 0;
+                        action
                     }
                 } else if let Some(request) = model.oldest_elicitation().cloned() {
                     if key.is("escape") {
@@ -240,19 +238,57 @@ fn run_with_controller(
                             id: request.id,
                             response: CreateElicitationResponse::new(ElicitationAction::Cancel),
                         })
-                    } else if key.is("enter") {
-                        form.accept(request.id, &request.request)
-                            .map_or(Action::Changed, Action::Command)
                     } else {
-                        Action::None
+                        let choice_changed =
+                            if let agent_client_protocol::schema::v1::ElicitationMode::Form(
+                                form_request,
+                            ) = &request.request.mode
+                            {
+                                form.option_key(&form_request.requested_schema, &key)
+                            } else {
+                                false
+                            };
+                        if key.is("enter") {
+                            form.accept(request.id, &request.request)
+                                .map_or(Action::Changed, Action::Command)
+                        } else if choice_changed {
+                            Action::Changed
+                        } else {
+                            Action::None
+                        }
                     }
                 } else if model.dialogs.front().is_none() && model.auth.is_some() {
                     auth::key(&key, &mut model)
                 } else if model.dialogs.front().is_none()
                     && let Some(active) = &mut palette
                 {
-                    let choice = active.key(&key, &model);
-                    palette_choice(choice, &mut palette, &mut config_open, &mut composer)
+                    if active.kind == Kind::Commands
+                        && !key.is("escape")
+                        && !key.is("up")
+                        && !key.is("down")
+                        && !key.is("enter")
+                        && !key.is("tab")
+                    {
+                        let action = input_state.key(&key, &mut model, &mut composer);
+                        if composer.text.starts_with('/')
+                            && !composer.text.contains(char::is_whitespace)
+                        {
+                            active.query = composer.text[1..].to_owned();
+                            active.selected = 0;
+                        } else {
+                            palette = None;
+                        }
+                        action
+                    } else if key.is("enter")
+                        && active.kind == Kind::Commands
+                        && composer.text == "/model"
+                        && let Some(choice) = palette::typed_client_command(&composer.text, &model)
+                    {
+                        palette_choice(choice, &mut palette, &mut config_open, &mut composer)
+                    } else {
+                        let choice = active.key(&key, &model);
+                        palette_choice(choice, &mut palette, &mut config_open, &mut composer)
+                    }
                 } else if model.dialogs.front().is_none() && config_open {
                     if key.is("escape") {
                         config_open = false;
@@ -275,6 +311,7 @@ fn run_with_controller(
                     palette_choice(choice, &mut palette, &mut config_open, &mut composer)
                 } else if !composer_blocked && composer.text.is_empty() && key.typed() == Some("/")
                 {
+                    composer.insert("/");
                     palette = Some(Palette::new(Kind::Commands));
                     Action::Changed
                 } else if key.typed() == Some("@")
@@ -283,6 +320,7 @@ fn run_with_controller(
                 {
                     composer.insert("@");
                     picker.open(&current.cwd);
+                    picker.sync(&composer.text, composer.cursor);
                     Action::Changed
                 } else if key.is("k")
                     && composer.text.is_empty()
@@ -311,23 +349,28 @@ fn run_with_controller(
                     }
                 }
                 Msg::Edit(edit) if !composer_blocked => {
-                    let was_empty = composer.text.is_empty();
                     if composer.edit(&edit) {
                         focused_terminal = None;
-                        // Tern may batch fast typing into one edit: `/con` typed into an empty
-                        // composer opens the palette already filtered by `con`.
-                        if was_empty
-                            && composer.text.starts_with('/')
+                        if composer.text.starts_with('/')
                             && !composer.text.contains(char::is_whitespace)
                         {
-                            let mut commands = Palette::new(Kind::Commands);
-                            commands.query = composer.text[1..].to_owned();
-                            composer = Composer::default();
-                            palette = Some(commands);
+                            let commands =
+                                palette.get_or_insert_with(|| Palette::new(Kind::Commands));
+                            if commands.kind == Kind::Commands {
+                                commands.query = composer.text[1..].to_owned();
+                                commands.selected = 0;
+                            }
+                        } else if palette.as_ref().is_some_and(|p| p.kind == Kind::Commands) {
+                            palette = None;
+                        }
+                        if picker.open {
+                            picker.sync(&composer.text, composer.cursor);
+                            picker.selected = 0;
                         } else if edit.text.contains('@')
                             && let Some(current) = &model.session
                         {
                             picker.open(&current.cwd);
+                            picker.sync(&composer.text, composer.cursor);
                         }
                         Action::Changed
                     } else {
@@ -347,17 +390,18 @@ fn run_with_controller(
                     Action::None
                 }
                 Msg::Send(_) | Msg::Edit(_) | Msg::Undo | Msg::Focus => Action::None,
-                Msg::AttachSelect(path)
-                    if picker.open
-                        && picker
-                            .matches()
-                            .iter()
-                            .any(|item| item.to_string_lossy() == path) =>
-                {
-                    composer.insert(&attach::mention(std::path::Path::new(&path)));
-                    picker.open = false;
-                    session.focus(sf, Some("dock.ed"))?;
-                    Action::Changed
+                Msg::AttachSelect(path) if picker.open => {
+                    let path = path.strip_prefix("layer.complete.0.list.").unwrap_or(&path);
+                    if picker
+                        .matches()
+                        .iter()
+                        .any(|(item, _)| item.to_string_lossy() == path)
+                    {
+                        picker.accept(&mut composer, std::path::Path::new(path));
+                        Action::Changed
+                    } else {
+                        Action::None
+                    }
                 }
                 Msg::AttachSelect(_) => Action::None,
                 Msg::ElicitEdit(edit) => {
@@ -378,6 +422,18 @@ fn run_with_controller(
                             form_request,
                         ) = &request.request.mode
                         && form.change(&change, &form_request.requested_schema)
+                    {
+                        Action::Changed
+                    } else {
+                        Action::None
+                    }
+                }
+                Msg::ElicitChoice(name, value) => {
+                    if let Some(request) = model.oldest_elicitation()
+                        && let agent_client_protocol::schema::v1::ElicitationMode::Form(
+                            form_request,
+                        ) = &request.request.mode
+                        && form.choose(&form_request.requested_schema, &name, &value)
                     {
                         Action::Changed
                     } else {
@@ -440,6 +496,19 @@ fn run_with_controller(
                         Action::None
                     }
                 }
+                Msg::PermissionDismiss(id)
+                    if model.oldest_permission().is_some_and(|p| p.id == id) =>
+                {
+                    if let Some(option) = model.reject_once() {
+                        Action::Command(input::permission(id, option))
+                    } else {
+                        Action::Command(UiCmd::Permission {
+                            id,
+                            outcome: RequestPermissionOutcome::Cancelled,
+                        })
+                    }
+                }
+                Msg::PermissionDismiss(_) => Action::None,
                 Msg::Authenticate(id) => {
                     if model
                         .auth
@@ -450,6 +519,25 @@ fn run_with_controller(
                     } else {
                         Action::None
                     }
+                }
+                Msg::PickerConfirm if palette.is_some() => {
+                    let choice = palette
+                        .as_mut()
+                        .expect("picker checked")
+                        .activate(&model, false);
+                    palette_choice(choice, &mut palette, &mut config_open, &mut composer)
+                }
+                Msg::PickerClose if palette.is_some() => {
+                    palette = None;
+                    Action::Changed
+                }
+                Msg::ModelPicker if !dialog_before => {
+                    palette = Some(Palette::new(Kind::Model));
+                    Action::Changed
+                }
+                Msg::EffortPicker if !dialog_before => {
+                    palette = Some(Palette::new(Kind::Effort));
+                    Action::Changed
                 }
                 Msg::PickerSelect(id) if palette.is_some() => {
                     let choice = palette
@@ -484,6 +572,7 @@ fn run_with_controller(
                     .strip_prefix("method:")
                     .and_then(|s| s.parse::<usize>().ok())
                     .map_or(Action::None, |index| auth::choose(&model, index)),
+                Msg::AuthQuit if model.auth.is_some() => Action::Quit,
                 Msg::AccountDetails => {
                     model.ext.account_details = !model.ext.account_details;
                     Action::Changed
@@ -547,7 +636,12 @@ fn run_with_controller(
                         Action::None
                     }
                 }
-                Msg::PickerSelect(_)
+                Msg::AuthQuit
+                | Msg::PickerConfirm
+                | Msg::PickerClose
+                | Msg::ModelPicker
+                | Msg::EffortPicker
+                | Msg::PickerSelect(_)
                 | Msg::PickerActivate(_)
                 | Msg::ConfigChange(_, _)
                 | Msg::GoalChange(_)
@@ -722,10 +816,20 @@ fn palette_choice(
         }
         Choice::Insert(text) => {
             *palette = None;
+            if composer.text.starts_with('/') {
+                for _ in 0..composer.text.chars().count() {
+                    composer.backspace();
+                }
+            }
             composer.insert(&text);
             Action::Changed
         }
         Choice::Command(cmd) => {
+            if composer.text.starts_with('/') {
+                for _ in 0..composer.text.chars().count() {
+                    composer.backspace();
+                }
+            }
             let keep = matches!(cmd, UiCmd::ListSessions { .. } | UiCmd::DeleteSession(_));
             #[cfg(feature = "unstable_llm_providers")]
             let keep = keep || matches!(cmd, UiCmd::SetProvider(_) | UiCmd::DisableProvider(_));
@@ -735,14 +839,29 @@ fn palette_choice(
             Action::Command(cmd)
         }
         Choice::Open(kind, cmd) => {
+            if composer.text.starts_with('/') {
+                for _ in 0..composer.text.chars().count() {
+                    composer.backspace();
+                }
+            }
             *palette = Some(Palette::new(kind));
             cmd.map_or(Action::Changed, Action::Command)
         }
         Choice::Goal => {
+            if composer.text.starts_with('/') {
+                for _ in 0..composer.text.chars().count() {
+                    composer.backspace();
+                }
+            }
             *palette = None;
             Action::OpenGoal
         }
         Choice::Prefs => {
+            if composer.text.starts_with('/') {
+                for _ in 0..composer.text.chars().count() {
+                    composer.backspace();
+                }
+            }
             *palette = None;
             *config_open = true;
             Action::Changed

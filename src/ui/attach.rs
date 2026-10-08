@@ -10,7 +10,7 @@ use agent_client_protocol::schema::v1::{
     PromptCapabilities, ResourceLink, TextContent, TextResourceContents,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use tern_sdk::ui::{self, Node, PickerItem};
+use tern_sdk::ui::{self, Anchor, Node};
 
 const MAX_ENTRIES: usize = 4000;
 const MAX_DEPTH: usize = 6;
@@ -23,11 +23,13 @@ pub struct AttachPicker {
     pub query: String,
     pub selected: usize,
     pub files: Vec<PathBuf>,
+    pub dirs: Vec<PathBuf>,
 }
 
 impl AttachPicker {
     pub fn open(&mut self, cwd: &Path) {
         self.files.clear();
+        self.dirs.clear();
         self.query.clear();
         self.selected = 0;
         self.open = true;
@@ -55,6 +57,9 @@ impl AttachPicker {
                     continue;
                 };
                 if kind.is_dir() && depth < MAX_DEPTH {
+                    if let Ok(relative) = path.strip_prefix(cwd) {
+                        self.dirs.push(relative.to_path_buf());
+                    }
                     dirs.push((path, depth + 1));
                 } else if kind.is_file()
                     && let Ok(relative) = path.strip_prefix(cwd)
@@ -63,40 +68,119 @@ impl AttachPicker {
                 }
             }
         }
+        self.dirs.sort();
         self.files.sort();
     }
 
-    pub fn matches(&self) -> Vec<&PathBuf> {
-        let query = self.query.to_lowercase();
-        self.files
+    /// Returns immediate directories before files under the path prefix typed after `@`.
+    pub fn matches(&self) -> Vec<(&PathBuf, bool)> {
+        let (parent, needle) = self
+            .query
+            .rsplit_once('/')
+            .unwrap_or(("", self.query.as_str()));
+        let needle = needle.to_lowercase();
+        self.dirs
             .iter()
-            .filter(|path| path.to_string_lossy().to_lowercase().contains(&query))
+            .map(|path| (path, true))
+            .chain(self.files.iter().map(|path| (path, false)))
+            .filter(|(path, _)| {
+                let Some(relative) = path.to_str() else {
+                    return false;
+                };
+                let Some((directory, basename)) = relative.rsplit_once('/') else {
+                    return parent.is_empty() && relative.to_lowercase().starts_with(&needle);
+                };
+                directory.eq_ignore_ascii_case(parent)
+                    && basename.to_lowercase().starts_with(&needle)
+            })
             .take(100)
             .collect()
+    }
+
+    /// The full token starts at the last `@` preceded by whitespace.
+    pub fn sync(&mut self, text: &str, cursor: usize) {
+        let end = text
+            .char_indices()
+            .nth(cursor)
+            .map_or(text.len(), |(byte, _)| byte);
+        let token = text[..end].split_whitespace().last().unwrap_or_default();
+        if let Some(query) = token.strip_prefix('@') {
+            self.query = query.to_owned();
+            self.selected = self.selected.min(self.matches().len().saturating_sub(1));
+        } else {
+            self.open = false;
+        }
     }
 
     pub fn view(&self) -> Node<Msg> {
         let matches = self.matches();
         let selected = self.selected.min(matches.len().saturating_sub(1));
-        let items: Vec<PickerItem> = matches
-            .iter()
-            .map(|path| {
-                let name = path.to_string_lossy().into_owned();
-                PickerItem::new(name.clone(), name)
-            })
-            .collect();
-        let mut picker = ui::picker()
-            .key("attachments")
-            .title("Attach file")
-            .query(self.query.clone())
-            .cursor(self.query.encode_utf16().count())
-            .items(items)
+        let list = ui::list()
+            .key("list")
+            .selected(
+                matches
+                    .get(selected)
+                    .map(|(path, _)| format!("layer.complete.0.list.{}", path.to_string_lossy()))
+                    .unwrap_or_default(),
+            )
             .empty("No matching files")
-            .on_select(|id| Msg::AttachSelect(id.to_owned()));
-        if let Some(path) = matches.get(selected) {
-            picker = picker.selected(path.to_string_lossy().into_owned());
+            .max_lines(10)
+            .children(matches.iter().map(|(path, dir)| {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                ui::item(format!("{name}{}", if *dir { "/" } else { "" }))
+                    .key(path.to_string_lossy().into_owned())
+                    .icon(if *dir { "folder" } else { "file" })
+            }))
+            .on_select(|path| Msg::AttachSelect(path.into()))
+            .on_activate(|path| Msg::AttachSelect(path.into()));
+        ui::overlay()
+            .key("complete")
+            .role("omp.autocomplete")
+            .anchor(Anchor::Caret("dock.ed".into()))
+            .child(ui::col().role("omp.select").child(list))
+            .into()
+    }
+
+    pub fn accept_selected(&mut self, composer: &mut super::composer::Composer) {
+        if let Some((path, directory)) = self.matches().get(self.selected) {
+            let replacement = if *directory {
+                format!("{}/", path.to_string_lossy())
+            } else {
+                mention(path).trim_end().to_owned()
+            };
+            self.accept_value(composer, replacement, *directory);
         }
-        picker.into()
+    }
+
+    /// Replace only the live mention token; a directory keeps the menu open.
+    pub fn accept(&mut self, composer: &mut super::composer::Composer, path: &Path) {
+        let directory = self.dirs.iter().any(|candidate| candidate == path);
+        let replacement = if directory {
+            format!("{}/", path.to_string_lossy())
+        } else {
+            mention(path).trim_end().to_owned()
+        };
+        self.accept_value(composer, replacement, directory);
+    }
+
+    fn accept_value(
+        &mut self,
+        composer: &mut super::composer::Composer,
+        path: String,
+        directory: bool,
+    ) {
+        let query_len = self.query.chars().count();
+        for _ in 0..query_len {
+            composer.backspace();
+        }
+        composer.insert(&path);
+        if directory {
+            self.query = path;
+            self.selected = 0;
+        } else {
+            composer.insert(" ");
+            self.open = false;
+        }
     }
 }
 

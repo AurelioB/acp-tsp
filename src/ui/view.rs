@@ -375,32 +375,10 @@ pub fn view_with(
         // `elicit::dialog` already returns the region's `col`.
         result = result.layer(super::elicit::dialog(request.id, &request.request, form));
     } else if let Some(permission) = model.visible_permission() {
-        let id = permission.id;
-        let title = permission
-            .request
-            .tool_call
-            .fields
-            .title
-            .clone()
-            .unwrap_or_else(|| "Tool permission".into());
-        let mut dialog = ui::overlay().modal(true).key("permission").head(
-            if ext::plan_text(&permission.request).is_some() {
-                "Approve Plan".to_owned()
-            } else {
-                title
-            },
-        );
-        if let Some(plan) = ext::plan_text(&permission.request) {
-            dialog = dialog.child(ui::md(plan.to_owned()).key("plan"));
-        }
-        for (i, option) in permission.request.options.iter().enumerate() {
-            dialog = dialog.child(
-                html::button(format!("{}. {}", i + 1, option.name))
-                    .key(format!("option.{i}"))
-                    .on_click(Msg::Permission(id, option.option_id.clone())),
-            );
-        }
-        result = result.layer(ui::col().child(dialog));
+        result = result.layer(super::permission::dialog(
+            permission.id,
+            &permission.request,
+        ));
     } else if let Some(auth) = &model.auth {
         result = result.layer(layer(auth::picker(auth, model.auth_selected)));
     } else if model.ext.account_details {
