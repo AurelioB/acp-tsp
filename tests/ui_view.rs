@@ -303,6 +303,7 @@ fn codex_exec_command_renders_as_a_shell_card_with_its_output() {
         .unwrap();
     assert_eq!(tool["p"]["role"], "omp.tool.bash");
     assert_eq!(tool["p"]["target"], "List files");
+    assert_eq!(tool["p"]["targetKind"], "text");
     assert_eq!(tool["c"][0]["k"], "ansi");
     assert_eq!(tool["c"][0]["p"]["text"], "a\nb\n");
 }

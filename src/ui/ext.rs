@@ -146,10 +146,13 @@ pub fn tool(
             "find" | "web" | "fetch" => TargetKind::Query,
             _ => TargetKind::Text,
         };
-        let target_kind = if name != "bash"
-            && path.is_none()
-            && arg(&["pattern", "glob", "query", "url"]).is_none()
-        {
+        // A title standing in for a missing argument is prose, not a command or path.
+        let from_title = if name == "bash" {
+            arg(&["command", "cmd"]).is_none()
+        } else {
+            path.is_none() && arg(&["pattern", "glob", "query", "url"]).is_none()
+        };
+        let target_kind = if from_title {
             TargetKind::Text
         } else {
             target_kind

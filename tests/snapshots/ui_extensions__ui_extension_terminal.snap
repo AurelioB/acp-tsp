@@ -139,7 +139,7 @@ expression: "wire(&model)[\"main\"]"
         "collapsible": false,
         "collapsed": false,
         "target": "Run",
-        "targetKind": "command",
+        "targetKind": "text",
         "lang": "bash",
         "age": 0,
         "exit": 3,
