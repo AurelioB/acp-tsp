@@ -86,6 +86,12 @@ Each stage ends with: all acceptance checks passing, coverage table (§6) update
 
 Acceptance: CI green on `main`; spike results recorded in this file.
 
+**Results (2026-10-08):**
+- Wake: `bus::WakeTerm` polls stdin plus a socketpair and injects a synthetic `{"ev":"wake"}` TSP event, so `Session::next(None)` returns as soon as ACP sends an event. Measured in a real Tern 0.6.2 pane (`tern new session … -- spike`): 400 events at 2 ms spacing, p50 0.049 ms, p99 0.132 ms, max 0.160 ms send→drain, no polling tick. R1 closed.
+- Tern 0.6.2 `hello` features: `blobs settle adopt dock program-palette reduce-motion aside scroll styles flow`.
+- Real `initialize` responses (clientCapabilities fs+terminal): `claude-agent-acp` 0.87.0 → `loadSession`, image+embeddedContext, MCP http+sse, `auth.logout`, `providers`, session `additionalDirectories close delete fork list resume subagents`, `_meta.claudeCode.promptQueueing`, `_meta.steering.supported`, **no `authMethods`** unless `auth.terminal` is advertised; `codex-acp` 2.1.1 → same session caps, MCP http only (`acp:false`), authMethods `api-key`, `chat-gpt`. Both push `_auth/status_update` right after `initialize` (contains account e-mail: never log raw wire by default).
+- e2e harness: `tern new session <name> --cwd DIR -- CMD` runs a program in a hidden session of the current window; `tern capture <block> --surfaces` reads surface text; `tern kill session <name>` cleans up.
+
 ### Stage 1 — Basics (usable chat with Claude and Codex)
 
 ACP:
@@ -267,7 +273,7 @@ Acceptance: recorded ACP transcripts (JSONL via `AcpAgent::with_debug`) per agen
 
 | ID | Item | Default decision |
 |---|---|---|
-| R1 | tern-sdk is sync and owns the tty; waking the UI thread on ACP events needs either a short `next()` timeout or a wake mechanism. | Spike in stage 0; accept ≤16 ms tick if CPU idle cost is negligible, else contribute a wakeable `Terminal` wrapper (custom `term::Terminal` impl over the tty + an eventfd). |
+| R1 | tern-sdk is sync and owns the tty; waking the UI thread on ACP events. | **Closed**: wakeable `Terminal` wrapper (`bus::WakeTerm`), sub-millisecond latency (stage 0 results). |
 | R2 | Whole-view re-render cost grows with transcript length during token streaming. | Credits coalesce renders; settle finished turns; if profiling shows cost, send raw `text append` ops for the streaming leaf via `Session::send`. |
 | R3 | agy server is proprietary, undocumented, and Google's ToS discourages third-party access. | Support via registry binary + probe-driven quirks; show ToS notice; no PTY-scraping adapter. |
 | R4 | Adapter versions move fast (codex-acp 1.x→2.x). | Pin preset versions; per-agent fixture replay catches regressions on bump. |
