@@ -54,6 +54,25 @@ struct Row {
     detail: String,
 }
 
+/// A client command typed or pasted in full (`/config`): what Enter does instead of sending
+/// it as a prompt. An agent command of the same name wins, so agent commands always reach
+/// the agent.
+pub fn typed_client_command(text: &str, model: &Model) -> Option<Choice> {
+    let name = text.trim().strip_prefix('/')?;
+    if name.is_empty() || name.contains(char::is_whitespace) {
+        return None;
+    }
+    let mut palette = Palette::new(Kind::Commands);
+    let rows = palette.rows(model);
+    if rows.iter().any(|row| row.id == format!("agent:{name}")) {
+        return None;
+    }
+    let id = format!("client:{name}");
+    rows.iter()
+        .any(|row| row.id == id)
+        .then(|| palette.select(&id, model, true))
+}
+
 impl Palette {
     pub fn new(kind: Kind) -> Self {
         Self {

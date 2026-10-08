@@ -255,6 +255,12 @@ fn run_with_controller(
                     && key.shift
                 {
                     model.next_mode().map_or(Action::None, Action::Command)
+                } else if key.is("enter")
+                    && !composer_blocked
+                    && let Some(choice) = palette::typed_client_command(&composer.text, &model)
+                {
+                    composer = Composer::default();
+                    palette_choice(choice, &mut palette, &mut config_open, &mut composer)
                 } else if !composer_blocked && composer.text.is_empty() && key.typed() == Some("/")
                 {
                     palette = Some(Palette::new(Kind::Commands));
@@ -285,6 +291,9 @@ fn run_with_controller(
                     // Tern sends the text it saw; ignore a stale duplicate after local submit.
                     if text != composer.text {
                         Action::None
+                    } else if let Some(choice) = palette::typed_client_command(&text, &model) {
+                        composer = Composer::default();
+                        palette_choice(choice, &mut palette, &mut config_open, &mut composer)
                     } else {
                         input::submit(&mut model, &mut composer)
                     }

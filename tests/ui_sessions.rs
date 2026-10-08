@@ -255,3 +255,14 @@ fn batched_slash_edit_opens_the_filtered_palette() {
         "the slash command must not be sent as a prompt"
     );
 }
+
+#[test]
+fn pasted_client_command_runs_on_enter_instead_of_prompting() {
+    // Bracketed paste of `/new` lands in the composer as text; Enter must run the command.
+    let (_, cmds) = drive(b"\x1b[200~/new\x1b[201~\r\x1b[27u\x04", None);
+    assert!(
+        cmds.iter().any(|cmd| matches!(cmd, UiCmd::NewSession)),
+        "got {cmds:?}"
+    );
+    assert!(!cmds.iter().any(|cmd| matches!(cmd, UiCmd::Prompt(_))));
+}
