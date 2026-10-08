@@ -301,7 +301,7 @@ async fn drive(
                     .client_info(Implementation::new("acp-tsp", env!("CARGO_PKG_VERSION")))
                     .client_capabilities(capabilities()),
             );
-            let init = match await_startup(request.block_task(), cmds, &events).await {
+            let init = match await_startup(request.block_task(), cmds, &events, &shared).await {
                 Startup::Response(result) => result?,
                 Startup::Restart => return Ok(Some(true)),
                 Startup::Shutdown => return Ok(Some(false)),
@@ -365,6 +365,7 @@ async fn await_startup<T>(
     request: impl Future<Output = Result<T, Error>>,
     cmds: &mut UnboundedReceiver<UiCmd>,
     events: &EventTx,
+    shared: &Shared,
 ) -> Startup<T> {
     tokio::pin!(request);
     loop {
@@ -374,6 +375,16 @@ async fn await_startup<T>(
                 Some(UiCmd::Restart) => return Startup::Restart,
                 Some(UiCmd::Shutdown) | None => return Startup::Shutdown,
                 Some(UiCmd::Prompt(_)) => { events.send(BridgeEvent::Error("Session is not ready".into())); }
+                Some(UiCmd::Permission { id, outcome }) => {
+                    shared.pending.answer_permission(id, Ok(outcome));
+                }
+                Some(UiCmd::Elicitation { id, response }) => {
+                    shared.pending.answer_elicitation(id, Ok(response));
+                }
+                Some(UiCmd::Cancel) => {
+                    shared.pending.cancel_turn(events);
+                    shared.pending.turn_ended();
+                }
                 _ => {},
             }
         }

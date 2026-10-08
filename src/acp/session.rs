@@ -70,20 +70,30 @@ pub(super) async fn run(
             "Unsupported MCP transports were dropped".into(),
         ));
     }
+    // Session setup can itself cause request-scoped dialogs (notably device-code auth).
+    macro_rules! await_setup {
+        ($request:expr) => {
+            match super::await_startup($request, cmds, &events, &shared).await {
+                super::Startup::Response(result) => result,
+                super::Startup::Restart => return Ok(Some(true)),
+                super::Startup::Shutdown => return Ok(Some(false)),
+            }
+        };
+    }
     let mut selected = options.start.clone();
     if selected == StartSession::Latest {
         if caps.session_capabilities.list.is_some() {
             let mut cursor = None;
             let mut newest = None;
             loop {
-                let result = cx
-                    .send_request(
+                let result = await_setup!(
+                    cx.send_request(
                         ListSessionsRequest::new()
                             .cwd(options.cwd.clone())
                             .cursor(cursor),
                     )
                     .block_task()
-                    .await?;
+                )?;
                 for info in result.sessions.into_iter().filter(|s| s.cwd == options.cwd) {
                     if newest.as_ref().is_none_or(
                         |old: &agent_client_protocol::schema::v1::SessionInfo| {
@@ -108,7 +118,9 @@ pub(super) async fn run(
             selected = StartSession::New;
         }
     }
-    let (turn_tx, mut turn_rx) = mpsc::unbounded_channel();
+    let (turn_tx, mut turn_rx) = mpsc::unbounded_channel::<TurnResult>();
+    let mut turn_token = 0_u64;
+    let mut current_turn_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
     let mut queued: VecDeque<Vec<ContentBlock>> = VecDeque::new();
     let mut running = false;
     let mut active: Option<SessionId> = None;
@@ -150,17 +162,16 @@ pub(super) async fn run(
                         let roots = std::iter::once(options.cwd.clone())
                             .chain(dirs.iter().cloned())
                             .collect();
-                        match cx
-                            .build_session_from(request)
-                            .with_mcp_server(InProcessMcpServer::new_service(
-                                "tern",
-                                super::mcp::TernTools::new(roots),
-                                NullRun,
-                            ))?
-                            .block_task()
-                            .start_session()
-                            .await
-                        {
+                        match await_setup!(
+                            cx.build_session_from(request)
+                                .with_mcp_server(InProcessMcpServer::new_service(
+                                    "tern",
+                                    super::mcp::TernTools::new(roots),
+                                    NullRun,
+                                ))?
+                                .block_task()
+                                .start_session()
+                        ) {
                             Ok(mut session) => {
                                 let response = session.response();
                                 let shared = shared.clone();
@@ -182,30 +193,32 @@ pub(super) async fn run(
                             Err(err) => Err(err),
                         }
                     } else {
-                        cx.send_request(request).block_task().await
+                        await_setup!(cx.send_request(request).block_task())
                     };
                     #[cfg(not(feature = "unstable_mcp_over_acp"))]
-                    let response = cx.send_request(request).block_task().await;
+                    let response = await_setup!(cx.send_request(request).block_task());
                     response.map(|s| (s.session_id, s.modes, s.config_options))
                 }
-                StartSession::Load(id) if kind == SessionStartKind::Load => cx
-                    .send_request(
+                // The v1 SDK exposes native MCP attachment only on session/new builders;
+                // load/resume/fork require a public builder API before tern can be attached.
+                StartSession::Load(id) if kind == SessionStartKind::Load => await_setup!(
+                    cx.send_request(
                         LoadSessionRequest::new(id.clone(), &options.cwd)
                             .additional_directories(dirs.clone())
                             .mcp_servers(servers.clone()),
                     )
                     .block_task()
-                    .await
-                    .map(|s| (id.clone(), s.modes, s.config_options)),
-                StartSession::Load(id) | StartSession::Resume(id) => cx
-                    .send_request(
+                )
+                .map(|s| (id.clone(), s.modes, s.config_options)),
+                StartSession::Load(id) | StartSession::Resume(id) => await_setup!(
+                    cx.send_request(
                         ResumeSessionRequest::new(id.clone(), &options.cwd)
                             .additional_directories(dirs.clone())
                             .mcp_servers(servers.clone()),
                     )
                     .block_task()
-                    .await
-                    .map(|s| (id.clone(), s.modes, s.config_options)),
+                )
+                .map(|s| (id.clone(), s.modes, s.config_options)),
                 StartSession::Latest => unreachable!(),
             };
             match setup {
@@ -310,12 +323,53 @@ pub(super) async fn run(
                     && let Some(task) = list_task.take() {
                     task.abort();
                 }
+                let changing_session = match &cmd {
+                    Some(UiCmd::NewSession) => true,
+                    Some(UiCmd::LoadSession(_)) => caps.load_session || caps.session_capabilities.resume.is_some(),
+                    Some(UiCmd::ResumeSession(_)) => caps.session_capabilities.resume.is_some(),
+                    Some(UiCmd::CloseSession) => caps.session_capabilities.close.is_some(),
+                    Some(UiCmd::DeleteSession(id)) => caps.session_capabilities.delete.is_some() && active.as_ref() == Some(id),
+                    Some(UiCmd::ForkSession) => {
+                        #[cfg(feature = "unstable_session_fork")]
+                        { caps.session_capabilities.fork.is_some() }
+                        #[cfg(not(feature = "unstable_session_fork"))]
+                        { false }
+                    }
+                    _ => false,
+                };
+                if running && changing_session {
+                    queued.clear();
+                    shared.pending.cancel_turn(&events);
+                    if let Some(id) = &active {
+                        cx.send_notification(CancelNotification::new(id.clone()))?;
+                    }
+                    let response = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        loop {
+                            match turn_rx.recv().await {
+                                Some((token, result)) if token == turn_token => return Some(result),
+                                Some(_) => {}
+                                None => return None,
+                            }
+                        }
+                    }).await;
+                    let ended = match response {
+                        Ok(Some(result)) => result.map(Box::new).map_err(|err| err.to_string()),
+                        Ok(None) => Err("Prompt response channel closed".into()),
+                        Err(_) => Err("Prompt cancellation timed out".into()),
+                    };
+                    if let Some(cancel) = current_turn_cancel.take() {
+                        let _ = cancel.send(());
+                    }
+                    events.send(BridgeEvent::TurnEnded(ended));
+                    shared.pending.turn_ended();
+                    running = false;
+                }
                 match cmd {
                 Some(UiCmd::Prompt(prompt)) => {
                     if let Some(id) = &active {
                         queued.push_back(prompt);
                         if !running {
-                            start_prompt(&cx, id, queued.pop_front().expect("queued prompt"), &turn_tx)?;
+                            current_turn_cancel = Some(start_prompt(&cx, id, queued.pop_front().expect("queued prompt"), &mut turn_token, &turn_tx)?);
                             running = true;
                         }
                     } else { events.send(BridgeEvent::Error("Session is not ready".into())); }
@@ -332,9 +386,7 @@ pub(super) async fn run(
                 Some(UiCmd::KillTerminal(id)) => {
                     if let Err(err) = terminals.kill(&id) { events.send(BridgeEvent::Error(err.to_string())); }
                 }
-                Some(UiCmd::NewSession) | Some(UiCmd::LoadSession(_)) | Some(UiCmd::ResumeSession(_)) | Some(UiCmd::ForkSession) | Some(UiCmd::CloseSession) | Some(UiCmd::DeleteSession(_)) if running => {
-                    events.send(BridgeEvent::Error("Wait for the current turn before changing sessions".into()));
-                }
+                // Session transitions cancel and finish the current turn above.
                 Some(UiCmd::NewSession) => {
                     events.send(BridgeEvent::SessionStarting(SessionStartKind::New));
                     switch(&shared, &terminals, &events, &mut mcp_task);
@@ -480,13 +532,17 @@ pub(super) async fn run(
                 }
             }
             result = turn_rx.recv(), if running => {
-                if let Some(result) = result {
+                if let Some((token, result)) = result {
+                    if token != turn_token {
+                        continue;
+                    }
+                    current_turn_cancel.take();
                     events.send(BridgeEvent::TurnEnded(result.map(Box::new).map_err(|err| err.to_string())));
                     running = false; shared.pending.turn_ended();
                     if let Some(next) = queued.pop_front()
                         && let Some(id) = &active
                     {
-                        start_prompt(&cx, id, next, &turn_tx)?;
+                        current_turn_cancel = Some(start_prompt(&cx, id, next, &mut turn_token, &turn_tx)?);
                         running = true;
                     }
                 }
@@ -524,18 +580,32 @@ fn switch(
     mcp_task.take();
 }
 
+type TurnResult = (u64, Result<PromptResponse, Error>);
+
 fn start_prompt(
     cx: &ConnectionTo<Agent>,
     session: &SessionId,
     prompt: Vec<ContentBlock>,
-    result_tx: &mpsc::UnboundedSender<Result<PromptResponse, Error>>,
-) -> Result<(), Error> {
-    let request = cx.send_request(PromptRequest::new(session.clone(), prompt));
+    turn_token: &mut u64,
+    result_tx: &mpsc::UnboundedSender<TurnResult>,
+) -> Result<tokio::sync::oneshot::Sender<()>, Error> {
+    *turn_token = turn_token.checked_add(1).expect("turn id overflow");
+    let token = *turn_token;
+    let request = cx
+        .send_request(PromptRequest::new(session.clone(), prompt))
+        .block_task();
     let result_tx = result_tx.clone();
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
     cx.spawn(async move {
-        let _ = result_tx.send(request.block_task().await);
+        tokio::select! {
+            result = request => {
+                let _ = result_tx.send((token, result));
+            }
+            _ = cancelled => {} // Dropping the request sends $/cancel_request.
+        }
         Ok(())
-    })
+    })?;
+    Ok(cancel)
 }
 
 fn is_auth_error(error: &Error) -> bool {
