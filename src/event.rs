@@ -125,6 +125,21 @@ pub enum BridgeEvent {
     Providers(Box<ListProvidersResponse>),
     /// `logout` succeeded; the agent needs authentication again.
     LoggedOut,
+    /// A `_`-prefixed extension notification from the agent (`_auth/status_update`,
+    /// `_claude/rateLimit`, ...). The params may hold account data: show, never log.
+    Extension {
+        /// The method name, including the leading `_`.
+        method: String,
+        /// Its params as received.
+        params: serde_json::Value,
+    },
+    /// The answer to [`UiCmd::Extension`].
+    ExtensionResult {
+        /// The method that was called.
+        method: String,
+        /// Its result, or the JSON-RPC error message.
+        result: Result<serde_json::Value, String>,
+    },
     /// A non-fatal error to show (failed request, bad fs path, ...).
     Error(String),
     /// The agent process exited or the connection closed. The UI offers
@@ -175,6 +190,9 @@ pub enum UiCmd {
     /// Send a prompt. When a turn is running, the ACP side queues it and sends
     /// it after the turn ends.
     Prompt(Vec<ContentBlock>),
+    /// Steer the running turn with more input (`_session/steering`) when the agent advertises
+    /// `_meta.steering.supported`; otherwise (or when no turn runs) the same as `Prompt`.
+    Steer(Vec<ContentBlock>),
     /// `session/cancel` the running turn. The ACP side also answers every
     /// pending permission request with `cancelled` and every pending
     /// elicitation with `cancel` (spec MUST) and emits
@@ -238,6 +256,14 @@ pub enum UiCmd {
     /// `providers/disable` (unstable).
     #[cfg(feature = "unstable_llm_providers")]
     DisableProvider(Box<DisableProviderRequest>),
+    /// A `_`-prefixed extension request (Codex `_session/goal`, `_session/async_task/stop`);
+    /// answered with [`BridgeEvent::ExtensionResult`].
+    Extension {
+        /// The method name, including the leading `_`.
+        method: String,
+        /// Its params.
+        params: serde_json::Value,
+    },
     /// Kill and respawn the agent, starting a new session.
     Restart,
     /// Shut down the agent and stop.

@@ -303,6 +303,9 @@ impl Model {
             }
             #[cfg(feature = "unstable_llm_providers")]
             BridgeEvent::Providers(providers) => self.sessions.providers = Some(*providers),
+            BridgeEvent::Extension { method, .. } | BridgeEvent::ExtensionResult { method, .. } => {
+                tracing::debug!(%method, "extension event not handled yet");
+            }
             BridgeEvent::LoggedOut => {
                 self.auth = None;
                 self.session = None;

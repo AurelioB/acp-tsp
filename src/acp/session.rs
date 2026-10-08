@@ -365,7 +365,11 @@ pub(super) async fn run(
                     running = false;
                 }
                 match cmd {
-                Some(UiCmd::Prompt(prompt)) => {
+                Some(UiCmd::Extension { method, .. }) => {
+                    events.send(BridgeEvent::ExtensionResult { method, result: Err("extension requests are not supported yet".into()) });
+                }
+                // Steering falls back to a queued prompt until `_session/steering` is wired.
+                Some(UiCmd::Prompt(prompt) | UiCmd::Steer(prompt)) => {
                     if let Some(id) = &active {
                         queued.push_back(prompt);
                         if !running {

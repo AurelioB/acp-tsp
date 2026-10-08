@@ -47,6 +47,9 @@ pub struct SessionOptions {
     pub mcp_servers: Vec<McpServer>,
     /// The first session to open.
     pub start: StartSession,
+    /// `_meta` sent with every session setup request (agent-specific options such as
+    /// `claudeCode.options`), from the agent's config.
+    pub session_meta: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl SessionOptions {
@@ -57,6 +60,7 @@ impl SessionOptions {
             additional_dirs: Vec::new(),
             mcp_servers: Vec::new(),
             start: StartSession::New,
+            session_meta: None,
         }
     }
 }
