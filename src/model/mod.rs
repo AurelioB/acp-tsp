@@ -256,6 +256,28 @@ impl Model {
         });
     }
 
+    /// After a turn ends: the ACP side sends the next queued prompt, so its turn starts here.
+    fn start_queued_or_idle(&mut self) {
+        if self.queued > 0 {
+            self.queued -= 1;
+            self.local_echo = self.queued_echoes.pop_front().map(|text| (text, 0));
+            self.active_turn_id += 1;
+            self.turn = Turn::Running {
+                since: Instant::now(),
+                cancelling: false,
+            };
+            self.turn_started = Some(Instant::now());
+            self.turn_cost_at_start = self
+                .content
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.cost.as_ref())
+                .map(|cost| (cost.currency.clone(), cost.amount));
+        } else {
+            self.turn = Turn::Idle;
+        }
+    }
+
     /// Start a local adapter command only when idle; nothing from this turn enters history.
     pub fn begin_usage(&mut self) {
         self.usage_report.pending = false;
@@ -449,7 +471,8 @@ impl Model {
                                 Some("Limits unavailable; see Details for the agent response".into());
                         }
                     }
-                    self.turn = Turn::Idle;
+                    // A prompt typed while the usage query ran was queued behind it.
+                    self.start_queued_or_idle();
                     return;
                 }
                 if let Ok(response) = &result {
@@ -516,19 +539,7 @@ impl Model {
                     Err(error) => self.errors.push(error),
                 }
                 self.local_echo = None;
-                if self.queued > 0 {
-                    self.queued -= 1;
-                    self.local_echo = self.queued_echoes.pop_front().map(|text| (text, 0));
-                    self.active_turn_id += 1;
-                    self.turn = Turn::Running {
-                        since: Instant::now(),
-                        cancelling: false,
-                    };
-                    self.turn_started = Some(Instant::now());
-                    self.turn_cost_at_start = self.content.usage.as_ref().and_then(|usage| usage.cost.as_ref()).map(|cost| (cost.currency.clone(), cost.amount));
-                } else {
-                    self.turn = Turn::Idle;
-                }
+                self.start_queued_or_idle();
             }
             BridgeEvent::Error(error) => self.errors.push(error),
             BridgeEvent::AgentExited { reason } => {

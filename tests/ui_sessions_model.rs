@@ -310,3 +310,36 @@ fn hidden_usage_turn_captures_text_without_transcript_or_turn_totals() {
     assert_eq!(model.usage_report.windows[0].used_pct, 8.0);
     assert!(matches!(model.turn, acp_tsp::model::Turn::Idle));
 }
+
+#[test]
+fn prompt_typed_during_a_usage_query_runs_as_its_own_turn() {
+    use agent_client_protocol::schema::v1::{PromptResponse, StopReason};
+    let ended = || BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(StopReason::EndTurn))));
+    let chunk = |text: &str| {
+        BridgeEvent::Update(Box::new(SessionUpdate::AgentMessageChunk(
+            ContentChunk::new(ContentBlock::Text(TextContent::new(text))),
+        )))
+    };
+    let mut model = Model::default();
+    model.begin_usage();
+    model.apply(chunk("**Weekly limit:** 50% left"));
+    // Queued behind the hidden query; the ACP side sends it once the query ends.
+    model.submitted("real prompt".into());
+    model.apply(ended());
+    assert!(matches!(model.turn, acp_tsp::model::Turn::Running { .. }));
+    model.apply(chunk("answer"));
+    model.apply(ended());
+    assert!(matches!(model.turn, acp_tsp::model::Turn::Idle));
+    // The answer is in the transcript, the usage text is not, and only the real turn counts.
+    let agent_text: Vec<_> = model
+        .transcript
+        .iter()
+        .filter_map(|entry| match &entry.kind {
+            EntryKind::Agent { blocks, .. } => Some(format!("{blocks:?}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(agent_text.len(), 1);
+    assert!(agent_text[0].contains("answer"));
+    assert_eq!(model.turn_summaries.len(), 1);
+}
