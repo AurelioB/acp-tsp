@@ -94,7 +94,10 @@ impl Registry {
         outcome: Result<RequestPermissionOutcome, Error>,
     ) -> bool {
         let mut entries = self.entries.lock();
-        if !matches!(entries.get(&id).map(|entry| &entry.responder), Some(Decision::Permission(_))) {
+        if !matches!(
+            entries.get(&id).map(|entry| &entry.responder),
+            Some(Decision::Permission(_))
+        ) {
             return false;
         }
         let pending = entries.remove(&id).expect("checked above");
@@ -112,7 +115,10 @@ impl Registry {
         response: Result<CreateElicitationResponse, Error>,
     ) -> bool {
         let mut entries = self.entries.lock();
-        if !matches!(entries.get(&id).map(|entry| &entry.responder), Some(Decision::Elicitation(_))) {
+        if !matches!(
+            entries.get(&id).map(|entry| &entry.responder),
+            Some(Decision::Elicitation(_))
+        ) {
             return false;
         }
         let pending = entries.remove(&id).expect("checked above");
