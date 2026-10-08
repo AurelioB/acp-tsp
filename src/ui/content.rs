@@ -32,6 +32,7 @@ pub fn upload(term: &mut Session<Msg>, model: &mut Model) -> anyhow::Result<()> 
     for entry in &model.transcript {
         match &entry.kind {
             crate::model::EntryKind::User { blocks, .. }
+            | crate::model::EntryKind::Steering { blocks }
             | crate::model::EntryKind::Agent { blocks, .. }
             | crate::model::EntryKind::Thought { blocks, .. } => {
                 for block in blocks {

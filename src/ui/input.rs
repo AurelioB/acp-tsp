@@ -17,6 +17,7 @@ pub enum Action {
     None,
     Changed,
     Command(UiCmd),
+    OpenGoal,
     AuthTerminal(usize),
     Quit,
 }
@@ -100,6 +101,7 @@ impl InputState {
         }
         match key.name.as_str() {
             "enter" if !key.shift && !key.alt => return submit(model, composer),
+            "enter" if key.alt && !key.shift => return submit_queued(model, composer),
             "enter" => composer.insert("\n"),
             "paste" => composer.insert(key.text.as_deref().unwrap_or_default()),
             "backspace" => composer.backspace(),
@@ -149,6 +151,14 @@ pub fn permission(id: u64, option_id: PermissionOptionId) -> UiCmd {
 }
 
 pub fn submit(model: &mut Model, composer: &mut Composer) -> Action {
+    submit_with_queue(model, composer, false)
+}
+
+pub fn submit_queued(model: &mut Model, composer: &mut Composer) -> Action {
+    submit_with_queue(model, composer, true)
+}
+
+fn submit_with_queue(model: &mut Model, composer: &mut Composer, queue: bool) -> Action {
     if composer.text.trim().is_empty() {
         return Action::None;
     }
@@ -173,6 +183,11 @@ pub fn submit(model: &mut Model, composer: &mut Composer) -> Action {
     let Some(text) = composer.take() else {
         return Action::None;
     };
+    let steer = !queue && model.ext.steering && matches!(model.turn, Turn::Running { .. });
+    if steer {
+        model.steered(text, prompt.clone());
+        return Action::Command(UiCmd::Steer(prompt));
+    }
     model.submitted(text);
     if let Some(crate::model::Entry {
         kind: crate::model::EntryKind::User { blocks, .. },
@@ -264,5 +279,40 @@ mod tests {
             input.key(&cancel, &mut model, &mut composer),
             Action::Command(UiCmd::Cancel)
         ));
+    }
+    #[test]
+    fn enter_steers_only_when_supported_and_alt_enter_queues() {
+        let mut input = InputState::default();
+        let mut model = Model::default();
+        let mut composer = Composer::default();
+        model.submitted("original".into());
+        model.ext.steering = true;
+        composer.insert("now");
+        assert!(matches!(
+            input.key(&Key::named("enter"), &mut model, &mut composer),
+            Action::Command(UiCmd::Steer(_))
+        ));
+        assert_eq!(model.queued, 0);
+        assert!(matches!(
+            model.transcript.last().unwrap().kind,
+            crate::model::EntryKind::Steering { .. }
+        ));
+        composer.insert("later");
+        let alt = Key {
+            alt: true,
+            ..Key::named("enter")
+        };
+        assert!(matches!(
+            input.key(&alt, &mut model, &mut composer),
+            Action::Command(UiCmd::Prompt(_))
+        ));
+        assert_eq!(model.queued, 1);
+        model.ext.steering = false;
+        composer.insert("without support");
+        assert!(matches!(
+            input.key(&Key::named("enter"), &mut model, &mut composer),
+            Action::Command(UiCmd::Prompt(_))
+        ));
+        assert_eq!(model.queued, 2);
     }
 }

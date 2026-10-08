@@ -1,0 +1,50 @@
+---
+source: tests/ui_extensions.rs
+expression: "wire(&model)[\"main\"]"
+---
+{
+  "id": "main",
+  "k": "col",
+  "p": {
+    "key": "transcript"
+  },
+  "c": [
+    {
+      "id": "main.entry.1",
+      "k": "tool",
+      "p": {
+        "name": "execute",
+        "key": "entry.1",
+        "title": "Run",
+        "status": "pending",
+        "collapsible": true
+      },
+      "c": [
+        {
+          "id": "main.entry.1.cwd",
+          "k": "text",
+          "p": {
+            "text": "/tmp",
+            "key": "cwd"
+          }
+        },
+        {
+          "id": "main.entry.1.terminal.output",
+          "k": "ansi",
+          "p": {
+            "text": "first second",
+            "key": "terminal.output"
+          }
+        },
+        {
+          "id": "main.entry.1.terminal.exit",
+          "k": "badge",
+          "p": {
+            "text": "Exit 3",
+            "key": "terminal.exit"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+---
+source: tests/ui_extensions.rs
+expression: layer
+---
+{
+  "id": "layer",
+  "k": "col",
+  "c": [
+    {
+      "id": "layer.permission",
+      "k": "overlay",
+      "p": {
+        "modal": true,
+        "key": "permission",
+        "head": "Approve Plan"
+      },
+      "c": [
+        {
+          "id": "layer.permission.plan",
+          "k": "md",
+          "p": {
+            "text": "# Keep tests green\n\nDo the thing.",
+            "key": "plan"
+          }
+        },
+        {
+          "id": "layer.permission.option.0",
+          "k": "el",
+          "p": {
+            "tag": "button",
+            "text": "1. Implement",
+            "key": "option.0",
+            "actions": {
+              "click": "click"
+            }
+          }
+        },
+        {
+          "id": "layer.permission.option.1",
+          "k": "el",
+          "p": {
+            "tag": "button",
+            "text": "2. Revise",
+            "key": "option.1",
+            "actions": {
+              "click": "click"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

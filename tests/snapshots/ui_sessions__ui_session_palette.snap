@@ -13,18 +13,27 @@ expression: "layer(View::new().layer(Palette::new(Kind::Commands).render(&model)
       {
         "id": "client:new",
         "label": "/new",
-        "detail": "Start a fresh session"
+        "detail": "acp-tsp · Start a fresh session"
       },
       {
         "id": "client:restart",
         "label": "/restart",
-        "detail": "Restart agent"
+        "detail": "acp-tsp · Restart agent"
       },
       {
         "id": "client:quit",
         "label": "/quit",
-        "detail": "Quit"
+        "detail": "acp-tsp · Quit"
       }
+    ],
+    "order": [
+      {
+        "group": "acp-tsp",
+        "label": "acp-tsp"
+      },
+      "client:new",
+      "client:restart",
+      "client:quit"
     ],
     "selected": "client:new"
   }

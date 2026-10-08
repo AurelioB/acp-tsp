@@ -1,14 +1,14 @@
 //! Whole-view rendering from session state; no terminal I/O.
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, PlanEntryStatus, SessionConfigOptionCategory, ToolCallContent, ToolCallStatus,
-    ToolKind,
+    ContentBlock, PlanEntryStatus, SessionConfigOptionCategory,
 };
 use tern_sdk::{
     Capabilities,
-    ui::{self, ChecklistItem, Hunk, ItemStatus, Node, Phase, Status, View, html},
+    ui::{self, ChecklistItem, ItemStatus, Node, Phase, View, html},
 };
 
+use super::ext;
 use super::{Msg, auth, composer::Composer, prefs};
 use crate::model::{EntryKind, Model, Turn};
 
@@ -46,6 +46,12 @@ pub fn view_with(
                 }
                 card.into()
             }
+            EntryKind::Steering { blocks } => ui::card()
+                .key(key)
+                .tone("user")
+                .child(ui::badge("Steering").key("label"))
+                .children(super::content::blocks(blocks, "body", model))
+                .into(),
             EntryKind::Agent { blocks, .. } => {
                 if blocks.len() == 1 && matches!(blocks.first(), Some(ContentBlock::Text(_))) {
                     let ContentBlock::Text(text) = &blocks[0] else {
@@ -70,93 +76,17 @@ pub fn view_with(
                 .children(super::content::blocks(blocks, "body", model))
                 .into(),
             EntryKind::Tool { call, cancelled } => {
-                // Tern chooses its tool glyph from `name`; normalize ACP kinds
-                // rather than relying on agent-specific programmatic names.
-                let name = match call.kind {
-                    ToolKind::Read => "read",
-                    ToolKind::Edit => "edit",
-                    ToolKind::Delete => "delete",
-                    ToolKind::Move => "move",
-                    ToolKind::Search => "search",
-                    ToolKind::Execute => "execute",
-                    ToolKind::Think => "think",
-                    ToolKind::Fetch => "fetch",
-                    ToolKind::SwitchMode => "switch_mode",
-                    _ => call.name.as_deref().unwrap_or("other"),
-                };
-                let status = if *cancelled {
-                    Status::Cancelled
-                } else {
-                    match call.status {
-                        ToolCallStatus::Pending => Status::Pending,
-                        ToolCallStatus::InProgress => Status::Running,
-                        ToolCallStatus::Completed => Status::Done,
-                        ToolCallStatus::Failed => Status::Error,
-                        _ => Status::Pending,
-                    }
-                };
-                let mut tool = ui::tool(name)
-                    .key(key)
-                    .title(call.title.clone())
-                    .status(status)
-                    .collapsible(true);
-                if let Some(location) = call.locations.first() {
-                    tool = tool.target(location.path.display().to_string());
+                let parent = model
+                    .ext
+                    .tools
+                    .get(&call.tool_call_id)
+                    .and_then(|meta| meta.parent.as_deref());
+                let nested = parent.is_some_and(|id| model.transcript.iter().any(|entry|
+                    matches!(&entry.kind, EntryKind::Tool { call, .. } if call.tool_call_id.0.as_ref() == id)));
+                if nested {
+                    continue;
                 }
-                for (i, content) in call.content.iter().enumerate() {
-                    let body: Node<Msg> = match content {
-                        ToolCallContent::Diff(diff) => {
-                            let lines = diff
-                                .old_text
-                                .as_deref()
-                                .unwrap_or_default()
-                                .lines()
-                                .map(|line| format!("-{line}"))
-                                .chain(diff.new_text.lines().map(|line| format!("+{line}")))
-                                .collect();
-                            ui::diff()
-                                .key(i)
-                                .path(diff.path.display().to_string())
-                                .hunks(vec![Hunk {
-                                    old_start: Some(1),
-                                    new_start: Some(1),
-                                    lines,
-                                }])
-                                .into()
-                        }
-                        ToolCallContent::Content(content) => {
-                            super::content::block(&content.content, format!("{i}"), model)
-                        }
-                        ToolCallContent::Terminal(terminal) => super::content::terminal(
-                            &terminal.terminal_id,
-                            model.content.terminals.get(&terminal.terminal_id),
-                            format!("{i}"),
-                        ),
-                        _ => ui::code("Unsupported tool content").key(i).into(),
-                    };
-                    tool = tool.child(body);
-                }
-                if let Some(raw) = &call.raw_input {
-                    tool = tool.child(
-                        ui::section()
-                            .key("raw.in")
-                            .head("Input")
-                            .collapsible(true)
-                            .collapsed(true)
-                            .child(ui::code(raw.to_string()).key("body")),
-                    );
-                }
-                if let Some(raw) = &call.raw_output {
-                    tool = tool.child(
-                        ui::section()
-                            .key("raw.out")
-                            .head("Output")
-                            .collapsible(true)
-                            .collapsed(true)
-                            .child(ui::code(raw.to_string()).key("body")),
-                    );
-                }
-                tool.into()
+                ext::tool(call, *cancelled, key, model, 0)
             }
             EntryKind::Plan(plan) => {
                 let items = plan
@@ -376,8 +306,27 @@ pub fn view_with(
     if model.queued > 0 {
         bar = bar.child(ui::seg(format!("{} queued", model.queued)).key("queue"));
     }
-    if !model.status.is_empty() {
+    if !model.status.is_empty() && !matches!(model.turn, Turn::Running { .. }) {
         bar = bar.child(ui::seg(model.status.clone()).key("status"));
+    }
+    if let Some(auth) = &model.ext.auth
+        && let Some(label) = &auth.label
+    {
+        bar = bar.child(
+            html::button(label.clone())
+                .key("account")
+                .on_click(Msg::AccountDetails),
+        );
+    }
+    if let Some(quota) = model.ext.quota_tokens {
+        // Both adapters report token_count, not a quota ceiling. Keep the
+        // meter honest: a numeric label, with no invented percentage.
+        bar = bar.child(
+            ui::meter()
+                .key("quota")
+                .value(0.0)
+                .label(format!("{quota} tokens spent · limit not reported")),
+        );
     }
     if let Some(usage) = &model.content.usage {
         bar = bar.child(
@@ -393,6 +342,17 @@ pub fn view_with(
         if let Some(cost) = &usage.cost {
             bar = bar.child(ui::seg(format!("{} {:.2}", cost.currency, cost.amount)).key("cost"));
         }
+    }
+    if let Some(rate) = &model.ext.rate_limit {
+        main = main.child(
+            ui::card()
+                .key("rate.limit")
+                .tone("warning")
+                .child(ui::text(rate.clone()).key("message")),
+        );
+    }
+    if let Some(toast) = &model.ext.toast {
+        main = main.child(ui::toast(toast.clone()).key("extension.result"));
     }
     let blocked = model.dialogs.front().is_some() || model.auth.is_some() || model.exited.is_some();
     let dock = ui::col().child(bar).child(
@@ -421,7 +381,16 @@ pub fn view_with(
             .title
             .clone()
             .unwrap_or_else(|| "Tool permission".into());
-        let mut dialog = ui::overlay().modal(true).key("permission").head(title);
+        let mut dialog = ui::overlay().modal(true).key("permission").head(
+            if ext::plan_text(&permission.request).is_some() {
+                "Approve Plan".to_owned()
+            } else {
+                title
+            },
+        );
+        if let Some(plan) = ext::plan_text(&permission.request) {
+            dialog = dialog.child(ui::md(plan.to_owned()).key("plan"));
+        }
         for (i, option) in permission.request.options.iter().enumerate() {
             dialog = dialog.child(
                 html::button(format!("{}. {}", i + 1, option.name))
@@ -432,6 +401,10 @@ pub fn view_with(
         result = result.layer(ui::col().child(dialog));
     } else if let Some(auth) = &model.auth {
         result = result.layer(layer(auth::picker(auth, model.auth_selected)));
+    } else if model.ext.account_details {
+        result = result.layer(ext::account_details(model));
+    } else if model.ext.goal_open {
+        result = result.layer(ext::goal_form(model));
     } else if let Some(picker) = picker.filter(|p| p.open) {
         result = result.layer(layer(picker.view()));
     } else if let Some(reason) = &model.exited {

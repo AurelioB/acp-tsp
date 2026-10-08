@@ -106,7 +106,7 @@ issue, not a general agy requirement.
 
 | Key | Action |
 |---|---|
-| Enter / Shift+Enter | send / newline |
+| Enter / Alt+Enter / Shift+Enter | send (steer an active turn if advertised) / queue a normal next prompt / newline |
 | `/` (empty composer) | search agent slash commands and client actions |
 | ↑ ↓, Enter, Escape (picker) | choose, activate, or close the picker |
 | `r`, `d` (session picker) | resume; delete after pressing `d` again to confirm |
@@ -120,18 +120,22 @@ issue, not a general agy requirement.
 | r | restart an agent that exited |
 | Ctrl+D (empty composer), Ctrl+C twice | quit |
 
-Prompts typed during a turn are queued and sent when it ends.
+During a running turn, Enter steers immediately when the agent advertises steering;
+Alt+Enter always queues the next normal prompt. Without steering support both send keys
+queue while a turn runs. Steering messages appear in the current turn's transcript.
 File mentions stay inside the session workspace roots, including additional directories.
 Small text files are embedded only when the agent advertises embedded context;
 images and audio are sent only when their respective prompt capabilities are advertised.
 
-The slash picker offers `/new`, `/sessions`, `/resume`, `/close`, `/delete`,
-`/mode`, `/config`, `/logout`, `/restart`, and `/quit` when supported by the
-agent; `/fork` and `/providers` appear when their unstable capabilities are
-available. Agent commands are inserted into the composer and sent as ordinary
-prompt text on Enter. A client command typed or pasted in full (`/sessions` + Enter) runs
-directly unless the agent has a command with the same name (Claude, for example, has its
-own `/config`), in which case the agent's command wins. Session settings use a native preferences sheet; the
+The slash picker separates agent commands from `acp-tsp` actions, with agent commands
+first; client actions are labeled `acp-tsp ·` so identical names (such as Claude's
+`/config`) are distinguishable. Agent commands are inserted into the composer and
+sent as ordinary prompt text on Enter. A client command typed or pasted in full
+(`/sessions` + Enter) runs directly unless the agent advertises the same name;
+the agent command wins. `/goal` opens a goal-control form only when the agent
+advertises `_session/goal` (some adapters expose it only to AIR clients).
+The dock account chip opens account details on click; the account e-mail is hidden
+until this sheet is opened. Session settings use a native preferences sheet; the
 provider picker opens a provider's routing preferences, where saving replaces
 its entire headers map. Existing secret headers cannot be read back: enter the
 full replacement JSON map before saving. Terminal login methods temporarily

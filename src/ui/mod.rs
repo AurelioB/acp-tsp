@@ -5,6 +5,7 @@ mod auth;
 pub mod composer;
 pub mod content;
 pub mod elicit;
+mod ext;
 mod input;
 pub mod palette;
 pub mod prefs;
@@ -78,6 +79,9 @@ pub enum Msg {
     ElicitCancel(u64),
     KillTerminal(TerminalId),
     TerminalFocus(TerminalId),
+    AccountDetails,
+    GoalChange(serde_json::Value),
+    GoalAction(String),
 }
 
 /// Runs the UI on the current thread until the user quits.
@@ -179,7 +183,10 @@ fn run_with_controller(
     }
     while let Some(input) = session.next(None)? {
         let elicitation_before = form.id;
-        let dialog_before = model.dialogs.front().is_some() || model.auth.is_some();
+        let dialog_before = model.dialogs.front().is_some()
+            || model.auth.is_some()
+            || model.ext.goal_open
+            || model.ext.account_details;
         let composer_blocked = dialog_before
             || model.exited.is_some()
             || picker.open
@@ -191,7 +198,13 @@ fn run_with_controller(
                 if key.typed().is_none() {
                     tracing::debug!(name = %key.name, ctrl = key.ctrl, "key");
                 }
-                if picker.open && model.dialogs.front().is_none() && model.auth.is_none() {
+                if (model.ext.goal_open || model.ext.account_details) && key.is("escape") {
+                    model.ext.goal_open = false;
+                    model.ext.account_details = false;
+                    Action::Changed
+                } else if model.ext.goal_open || model.ext.account_details {
+                    Action::None
+                } else if picker.open && model.dialogs.front().is_none() && model.auth.is_none() {
                     if key.is("escape") {
                         picker.open = false;
                         session.focus(sf, Some("dock.ed"))?;
@@ -471,6 +484,41 @@ fn run_with_controller(
                     .strip_prefix("method:")
                     .and_then(|s| s.parse::<usize>().ok())
                     .map_or(Action::None, |index| auth::choose(&model, index)),
+                Msg::AccountDetails => {
+                    model.ext.account_details = !model.ext.account_details;
+                    Action::Changed
+                }
+                Msg::GoalChange(value) if model.ext.goal_open => {
+                    if let Some(objective) = value.as_str() {
+                        model.ext.goal_draft = objective.into();
+                    }
+                    Action::Changed
+                }
+                Msg::GoalAction(action) if model.ext.goal_open => {
+                    let Some(session) = &model.session else {
+                        continue;
+                    };
+                    if !model
+                        .ext
+                        .goal
+                        .as_ref()
+                        .is_some_and(|goal| goal.actions.contains(&action))
+                        || (action == "set" && model.ext.goal_draft.trim().is_empty())
+                    {
+                        Action::None
+                    } else {
+                        let mut params =
+                            serde_json::json!({"sessionId": session.id, "action": action});
+                        if action == "set" {
+                            params["objective"] = serde_json::json!(model.ext.goal_draft.trim());
+                        }
+                        model.ext.goal_open = false;
+                        Action::Command(UiCmd::Extension {
+                            method: "_session/goal".into(),
+                            params,
+                        })
+                    }
+                }
                 Msg::ConfigChange(id, value) if config_open => {
                     prefs::change(&model, id.as_deref(), &value)
                         .map_or(Action::None, Action::Command)
@@ -499,9 +547,11 @@ fn run_with_controller(
                         Action::None
                     }
                 }
-                Msg::PickerSelect(_) | Msg::PickerActivate(_) | Msg::ConfigChange(_, _) => {
-                    Action::None
-                }
+                Msg::PickerSelect(_)
+                | Msg::PickerActivate(_)
+                | Msg::ConfigChange(_, _)
+                | Msg::GoalChange(_)
+                | Msg::GoalAction(_) => Action::None,
             },
             Input::Event(Event::Error(error)) => {
                 tracing::warn!(message = %error.msg, "TSP rejected operation");
@@ -529,6 +579,11 @@ fn run_with_controller(
                         reason: "Agent controller unavailable; restart is not possible".into(),
                     });
                 }
+                changed = true;
+            }
+            Action::OpenGoal => {
+                palette = None;
+                model.ext.goal_open = true;
                 changed = true;
             }
             Action::AuthTerminal(index) => {
@@ -638,7 +693,12 @@ fn screen(
     picker: &attach::AttachPicker,
 ) -> tern_sdk::ui::View<Msg> {
     let mut view = view::view_with(model, composer, caps, form, Some(picker));
-    if model.dialogs.front().is_none() && model.auth.is_none() && !picker.open {
+    if model.dialogs.front().is_none()
+        && model.auth.is_none()
+        && !picker.open
+        && !model.ext.account_details
+        && !model.ext.goal_open
+    {
         if let Some(palette) = palette {
             view = view.layer(view::layer(palette.render(model)));
         } else if config_open {
@@ -677,6 +737,10 @@ fn palette_choice(
         Choice::Open(kind, cmd) => {
             *palette = Some(Palette::new(kind));
             cmd.map_or(Action::Changed, Action::Command)
+        }
+        Choice::Goal => {
+            *palette = None;
+            Action::OpenGoal
         }
         Choice::Prefs => {
             *palette = None;

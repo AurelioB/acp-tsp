@@ -1,6 +1,7 @@
 //! Pure session state, updated from [`crate::event::BridgeEvent`]s.
 
 pub mod content;
+pub mod ext;
 pub mod session;
 use std::{collections::VecDeque, path::PathBuf, time::Instant};
 
@@ -31,6 +32,9 @@ pub enum EntryKind {
         message_id: Option<String>,
         blocks: Vec<ContentBlock>,
         local: bool,
+    },
+    Steering {
+        blocks: Vec<ContentBlock>,
     },
     Agent {
         text: String,
@@ -122,6 +126,7 @@ pub struct Model {
     pub elicitations: VecDeque<PendingElicitation>,
     pub dialogs: VecDeque<PendingId>,
     pub content: content::ContentState,
+    pub ext: ext::ExtensionState,
     pub errors: Vec<String>,
     pub notices: Vec<String>,
     pub debug_updates: Vec<String>,
@@ -154,6 +159,7 @@ impl Default for Model {
             elicitations: VecDeque::new(),
             dialogs: VecDeque::new(),
             content: content::ContentState::default(),
+            ext: ext::ExtensionState::default(),
             errors: Vec::new(),
             notices: Vec::new(),
             debug_updates: Vec::new(),
@@ -200,6 +206,12 @@ impl Model {
         });
     }
 
+    /// A steering message belongs to the active turn, not the next-prompt queue.
+    pub fn steered(&mut self, text: String, blocks: Vec<ContentBlock>) {
+        self.local_echo = Some((text, 0));
+        self.push(EntryKind::Steering { blocks });
+    }
+
     pub fn cancel(&mut self) {
         if let Turn::Running { cancelling, .. } = &mut self.turn {
             *cancelling = true;
@@ -215,6 +227,7 @@ impl Model {
         match event {
             BridgeEvent::Status(text) => self.status = text,
             BridgeEvent::Initialized(init) => {
+                self.ext.initialized(&init);
                 self.prompt_capabilities = init.agent_capabilities.prompt_capabilities.clone();
                 self.agent = init.agent_info;
                 self.capabilities = init.agent_capabilities;
@@ -236,6 +249,10 @@ impl Model {
                 self.elicitations.clear();
                 self.dialogs.clear();
                 self.content = content::ContentState::default();
+                self.ext.tools.clear();
+                self.ext.rate_limit = None;
+                self.ext.quota_tokens = None;
+                self.ext.goal_open = false;
                 self.errors.clear();
                 self.notices.clear();
                 self.debug_updates.clear();
@@ -303,11 +320,19 @@ impl Model {
             }
             #[cfg(feature = "unstable_llm_providers")]
             BridgeEvent::Providers(providers) => self.sessions.providers = Some(*providers),
-            BridgeEvent::Extension { method, .. } | BridgeEvent::ExtensionResult { method, .. } => {
-                tracing::debug!(%method, "extension event not handled yet");
+            BridgeEvent::Extension { method, params } => self.ext.notification(&method, &params),
+            BridgeEvent::ExtensionResult { method, result } => {
+                if method == "_session/goal" || method == "_session/async_task/stop" {
+                    self.ext.toast = Some(match result {
+                        Ok(_) => format!("{method} succeeded"),
+                        Err(error) => format!("{method}: {error}"),
+                    });
+                }
             }
             BridgeEvent::LoggedOut => {
                 self.auth = None;
+                self.ext.auth = None;
+                self.ext.account_details = false;
                 self.session = None;
                 self.loading_info = None;
                 self.status = "Logged out".into();
@@ -330,6 +355,9 @@ impl Model {
             BridgeEvent::Resolved(id) => self.resolve_dialog(id),
             BridgeEvent::Terminal(event) => self.content.terminal(event),
             BridgeEvent::TurnEnded(result) => {
+                if let Ok(response) = &result {
+                    self.ext.usage(response.meta.as_ref());
+                }
                 #[cfg(feature = "unstable_end_turn_token_usage")]
                 if let Ok(response) = &result
                     && let Some(usage) = &response.usage
@@ -379,6 +407,9 @@ impl Model {
                 self.elicitations.clear();
                 self.dialogs.clear();
                 self.auth = None;
+                self.ext.auth = None;
+                self.ext.account_details = false;
+                self.ext.goal_open = false;
                 self.loading_info = None;
                 self.queued = 0;
             }
@@ -480,6 +511,7 @@ impl Model {
             SessionUpdate::AgentMessageChunk(chunk) => self.chunk("agent", chunk),
             SessionUpdate::AgentThoughtChunk(chunk) => self.chunk("thought", chunk),
             SessionUpdate::ToolCall(call) => {
+                self.ext.tool(&call.tool_call_id, call.meta.as_ref());
                 if let Some(entry) = self.tool_mut(&call.tool_call_id) {
                     entry.kind = EntryKind::Tool {
                         call: Box::new(call),
@@ -493,6 +525,7 @@ impl Model {
                 }
             }
             SessionUpdate::ToolCallUpdate(update) => {
+                self.ext.tool(&update.tool_call_id, update.meta.as_ref());
                 if let Some(entry) = self.tool_mut(&update.tool_call_id) {
                     if let EntryKind::Tool { call, .. } = &mut entry.kind {
                         call.update(update.fields);
@@ -518,7 +551,10 @@ impl Model {
                     self.push(EntryKind::Plan(plan));
                 }
             }
-            SessionUpdate::UsageUpdate(usage) => self.content.usage = Some(usage),
+            SessionUpdate::UsageUpdate(usage) => {
+                self.ext.usage(usage.meta.as_ref());
+                self.content.usage = Some(usage);
+            }
             #[cfg(feature = "unstable_session_notices")]
             SessionUpdate::Notice(notice) => self.content.notices.push(notice),
             #[cfg(feature = "unstable_plan_operations")]

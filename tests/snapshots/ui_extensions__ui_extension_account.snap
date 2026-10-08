@@ -1,0 +1,59 @@
+---
+source: tests/ui_extensions.rs
+expression: "normal[\"dock\"]"
+---
+{
+  "id": "dock",
+  "k": "col",
+  "c": [
+    {
+      "id": "dock.bar",
+      "k": "status",
+      "p": {
+        "key": "bar"
+      },
+      "c": [
+        {
+          "id": "dock.bar.agent",
+          "k": "seg",
+          "p": {
+            "text": "Agent",
+            "key": "agent"
+          }
+        },
+        {
+          "id": "dock.bar.state",
+          "k": "seg",
+          "p": {
+            "text": "Starting",
+            "key": "state"
+          }
+        },
+        {
+          "id": "dock.bar.account",
+          "k": "el",
+          "p": {
+            "tag": "button",
+            "text": "ChatGPT Pro",
+            "key": "account",
+            "actions": {
+              "click": "click"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dock.ed",
+      "k": "editor",
+      "p": {
+        "key": "ed",
+        "text": "",
+        "cursor": 0,
+        "placeholder": "Message (Enter sends · Shift+Enter newline)",
+        "readonly": false,
+        "sendable": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+---
+source: tests/ui_extensions.rs
+expression: "wire(&model)[\"main\"]"
+---
+{
+  "id": "main",
+  "k": "col",
+  "p": {
+    "key": "transcript"
+  },
+  "c": [
+    {
+      "id": "main.entry.2",
+      "k": "tool",
+      "p": {
+        "name": "think",
+        "key": "entry.2",
+        "title": "Investigating",
+        "status": "pending",
+        "collapsible": true
+      },
+      "c": [
+        {
+          "id": "main.entry.2.subagent",
+          "k": "agent",
+          "p": {
+            "name": "Agent",
+            "key": "subagent",
+            "depth": 1,
+            "collapsible": true
+          },
+          "c": [
+            {
+              "id": "main.entry.2.subagent.child.1",
+              "k": "tool",
+              "p": {
+                "name": "read",
+                "key": "child.1",
+                "title": "Read child file",
+                "status": "pending",
+                "collapsible": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

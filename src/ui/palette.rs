@@ -6,7 +6,7 @@ use agent_client_protocol::schema::v1::{
 };
 use tern_sdk::{
     keys::Key,
-    ui::{self, PickerItem},
+    ui::{self, OrderEntry, PickerItem},
 };
 
 use crate::{
@@ -44,6 +44,7 @@ pub enum Choice {
     Command(UiCmd),
     Open(Kind, Option<UiCmd>),
     Prefs,
+    Goal,
     Quit,
 }
 
@@ -156,12 +157,17 @@ impl Palette {
                     ),
                     ("restart", "Restart agent", true),
                     ("quit", "Quit", true),
+                    (
+                        "goal",
+                        "Control agent goal",
+                        model.session.is_some() && model.ext.goal.is_some(),
+                    ),
                 ] {
                     if available {
                         rows.push(Row {
                             id: format!("client:{name}"),
                             label: format!("/{name}"),
-                            detail: detail.into(),
+                            detail: format!("acp-tsp · {detail}"),
                         });
                     }
                 }
@@ -276,7 +282,12 @@ impl Palette {
                 }
             };
             rows.retain(|row| rank(row).is_some());
-            rows.sort_by_key(|row| rank(row));
+            rows.sort_by_key(|row| {
+                (
+                    rank(row),
+                    self.kind == Kind::Commands && row.id.starts_with("client:"),
+                )
+            });
         }
         rows
     }
@@ -287,6 +298,26 @@ impl Palette {
             return editor.render().into();
         }
         let rows = self.rows(model);
+        let mut order = Vec::new();
+        let mut group = "";
+        for row in &rows {
+            if self.kind == Kind::Commands {
+                let next = if row.id.starts_with("agent:") {
+                    "Agent commands"
+                } else {
+                    "acp-tsp"
+                };
+                if next != group {
+                    order.push(OrderEntry::Group {
+                        group: next.to_owned(),
+                        label: next.to_owned(),
+                        count: None,
+                    });
+                    group = next;
+                }
+            }
+            order.push(OrderEntry::Item(row.id.clone()));
+        }
         let selected = rows.get(self.selected).map(|row| row.id.clone());
         let mut picker = ui::picker()
             .key("palette")
@@ -306,6 +337,7 @@ impl Palette {
                     })
                     .collect::<Vec<_>>(),
             )
+            .order(order)
             .on_select(|id| Msg::PickerSelect(id.into()))
             .on_activate(|id| Msg::PickerActivate(id.into()));
         if let Some(selected) = selected {
@@ -461,6 +493,7 @@ impl Palette {
             "client:fork" => Choice::Command(UiCmd::ForkSession),
             "client:config" => Choice::Prefs,
             "client:mode" => Choice::Open(Kind::Mode, None),
+            "client:goal" => Choice::Goal,
             "client:providers" => {
                 #[cfg(feature = "unstable_llm_providers")]
                 {
