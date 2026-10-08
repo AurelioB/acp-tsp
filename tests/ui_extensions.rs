@@ -15,7 +15,26 @@ fn wire(model: &Model) -> Value {
             regions.insert(name.into(), serde_json::to_value(tree.wire()).unwrap());
         }
     }
-    Value::Object(regions)
+    let mut wire = Value::Object(regions);
+    zero_ages(&mut wire);
+    wire
+}
+
+/// `age` is milliseconds since a live tool started: wall-clock, not behavior.
+fn zero_ages(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if key == "age" && value.is_number() {
+                    *value = Value::from(0);
+                } else {
+                    zero_ages(value);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(zero_ages),
+        _ => {}
+    }
 }
 
 fn update(model: &mut Model, value: Value) {
