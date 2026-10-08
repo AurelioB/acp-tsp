@@ -279,7 +279,7 @@ fn completed_turn_usage_is_part_of_the_last_assistant_message() {
         footer["c"][1]["p"]["text"]
             .as_str()
             .unwrap()
-            .contains("24 tok · $0.02 this turn")
+            .contains("19 in · 5 out · $0.02")
     );
     assert!(!doc["main"].to_string().contains("Tokens:"));
 }

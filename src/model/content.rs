@@ -27,8 +27,6 @@ pub struct ContentState {
     pub blobs: HashMap<u64, String>,
     pub invalid_images: HashSet<u64>,
     pub usage: Option<UsageUpdate>,
-    #[cfg(feature = "unstable_end_turn_token_usage")]
-    pub last_turn_usage: Option<agent_client_protocol::schema::v1::Usage>,
     #[cfg(feature = "unstable_session_notices")]
     pub notices: Vec<agent_client_protocol::schema::v1::Notice>,
 }
@@ -77,23 +75,6 @@ impl ContentState {
                     terminal.released = true;
                 }
             }
-        }
-    }
-    #[cfg(feature = "unstable_end_turn_token_usage")]
-    pub fn turn_usage(
-        &mut self,
-        current: &agent_client_protocol::schema::v1::Usage,
-    ) -> agent_client_protocol::schema::v1::Usage {
-        use agent_client_protocol::schema::v1::Usage;
-        let prior = self.last_turn_usage.replace(current.clone());
-        if let Some(prior) = prior {
-            Usage::new(
-                current.total_tokens.saturating_sub(prior.total_tokens),
-                current.input_tokens.saturating_sub(prior.input_tokens),
-                current.output_tokens.saturating_sub(prior.output_tokens),
-            )
-        } else {
-            current.clone()
         }
     }
 }

@@ -246,14 +246,25 @@ fn subagent_message_upserts_then_streams_without_losing_metadata() {
 
 #[cfg(feature = "unstable_end_turn_token_usage")]
 #[test]
-fn end_turn_usage_shows_per_turn_deltas_not_cumulative_totals() {
+fn end_turn_usage_is_kept_per_turn_as_reported() {
+    // ACP's PromptResponse.usage is "token usage for this turn". Real adapters re-read their
+    // cached context every turn, so consecutive totals are similar, not running sums.
     use agent_client_protocol::schema::v1::{PromptResponse, StopReason, Usage};
     let mut model = Model::default();
-    for (total, input, output) in [(17, 11, 6), (29, 20, 9)] {
+    for (total, input, output) in [(46_917, 4, 105), (47_268, 4, 78)] {
+        model.submitted("go".into());
         model.apply(BridgeEvent::TurnEnded(Ok(Box::new(
             PromptResponse::new(StopReason::EndTurn).usage(Usage::new(total, input, output)),
         ))));
     }
-    assert!(matches!(&model.transcript[1].kind, EntryKind::Usage(usage)
-        if (usage.total_tokens, usage.input_tokens, usage.output_tokens) == (12, 9, 3)));
+    let mut outputs: Vec<_> = model
+        .turn_summaries
+        .iter()
+        .map(|(turn, summary)| (*turn, summary.tokens.as_ref().map(|u| u.output_tokens)))
+        .collect();
+    outputs.sort_by_key(|(turn, _)| *turn);
+    assert_eq!(
+        outputs.iter().map(|(_, out)| *out).collect::<Vec<_>>(),
+        [Some(105), Some(78)]
+    );
 }

@@ -508,24 +508,46 @@ fn turn_usage(summary: &TurnSummary) -> ui::Row<Msg> {
     });
     let mut text = stopped.map_or_else(String::new, |label| format!("{label} · "));
     text.push_str(&format!("{seconds:.1}s"));
-    let mut detail = format!("This turn: {seconds:.1}s");
-    if let Some((total, input, output)) = summary.tokens {
-        text.push_str(&format!(" · {total} tok"));
-        detail.push_str(&format!(" · {total} tokens"));
-        if input > 0 || output > 0 {
-            detail.push_str(&format!(" ({input} in · {output} out)"));
+    let mut detail = vec![format!("This turn: {seconds:.1}s")];
+    #[cfg(feature = "unstable_end_turn_token_usage")]
+    if let Some(usage) = &summary.tokens {
+        let tokens = TurnTokens::from(usage);
+        if tokens.input > 0 {
+            text.push_str(&format!(" · {} in", compact_tokens(tokens.input)));
+            if tokens.cached_read > 0 {
+                let share = tokens.cached_read as f64 / tokens.input as f64 * 100.0;
+                text.push_str(&format!(" ({share:.0}% cached)"));
+            }
+            detail.push(format!(
+                "Input: {} tokens ({} new · {} cache read · {} cache write)",
+                grouped(tokens.input),
+                grouped(usage.input_tokens),
+                grouped(tokens.cached_read),
+                grouped(tokens.cached_write)
+            ));
+        }
+        if tokens.output > 0 {
+            text.push_str(&format!(" · {} out", compact_tokens(tokens.output)));
+            detail.push(format!("Output: {} tokens", grouped(tokens.output)));
+        }
+        if tokens.thinking > 0 {
+            text.push_str(&format!(" · {} thinking", compact_tokens(tokens.thinking)));
+            detail.push(format!("Thinking: {} tokens", grouped(tokens.thinking)));
         }
     }
+    // Sub-cent costs read as noise ("$0.00"); the tooltip keeps the exact amount.
     if let Some((currency, cost)) = &summary.cost {
         let symbol = if currency == "USD" {
             "$"
         } else {
             currency.as_str()
         };
-        text.push_str(&format!(" · {symbol}{cost:.2}"));
-        detail.push_str(&format!(" · {symbol}{cost:.2}"));
+        if *cost >= 0.005 {
+            text.push_str(&format!(" · {symbol}{cost:.2}"));
+        }
+        detail.push(format!("Cost: {symbol}{cost:.4}"));
     }
-    text.push_str(" this turn");
+    let detail = detail.join("\n");
     let mut row = ui::row();
     if stopped.is_some() {
         row = row.tone(Tone::Warning);
@@ -806,12 +828,54 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
     dock.child(editor.child(bar)).into()
 }
 
+#[cfg(feature = "unstable_end_turn_token_usage")]
+/// One turn's token usage, normalised across adapters: ACP's `inputTokens` is the fresh input
+/// only, and cache reads/writes come on top (Claude reads most of its context from cache, so
+/// `inputTokens` alone would say "4 in").
+struct TurnTokens {
+    input: u64,
+    cached_read: u64,
+    cached_write: u64,
+    output: u64,
+    thinking: u64,
+}
+
+#[cfg(feature = "unstable_end_turn_token_usage")]
+impl From<&agent_client_protocol::schema::v1::Usage> for TurnTokens {
+    fn from(usage: &agent_client_protocol::schema::v1::Usage) -> Self {
+        let cached_read = usage.cached_read_tokens.unwrap_or(0);
+        let cached_write = usage.cached_write_tokens.unwrap_or(0);
+        Self {
+            input: usage.input_tokens + cached_read + cached_write,
+            cached_read,
+            cached_write,
+            output: usage.output_tokens,
+            thinking: usage.thought_tokens.unwrap_or(0),
+        }
+    }
+}
+
+/// `16913` → `16,913`.
+#[cfg(feature = "unstable_end_turn_token_usage")]
+fn grouped(count: u64) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 /// Token counts the way omp's context meter shows them: `1M`, `258K`, `950`.
 fn compact_tokens(count: u64) -> String {
     match count {
         n if n >= 1_000_000 && n % 1_000_000 == 0 => format!("{}M", n / 1_000_000),
         n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1_000_000.0),
-        n if n >= 1_000 => format!("{}K", (n + 500) / 1_000),
+        n if n >= 10_000 => format!("{}K", (n + 500) / 1_000),
+        n if n >= 1_000 => format!("{:.1}K", n as f64 / 1_000.0),
         n => n.to_string(),
     }
 }
@@ -819,6 +883,51 @@ fn compact_tokens(count: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "unstable_end_turn_token_usage")]
+    #[test]
+    fn turn_footer_counts_cached_context_as_input() {
+        use agent_client_protocol::schema::v1::Usage;
+        let footer = |usage: Usage, cost: Option<f64>| {
+            let summary = TurnSummary {
+                duration: std::time::Duration::from_millis(6_800),
+                tokens: Some(usage),
+                cost: cost.map(|cost| ("USD".to_owned(), cost)),
+                stop: None,
+            };
+            serde_json::to_string(
+                &tern_sdk::reconcile::Doc::from_view(
+                    View::<Msg>::new().main(ui::col().child(turn_usage(&summary))),
+                )
+                .unwrap()
+                .regions()[0]
+                    .as_ref()
+                    .unwrap()
+                    .wire(),
+            )
+            .unwrap()
+        };
+        // Codex: 4,619 fresh + 12,288 cached input, 6 out, no cost (subscription).
+        let mut codex = Usage::new(16_913, 4_619, 6);
+        codex.cached_read_tokens = Some(12_288);
+        let codex = footer(codex, None);
+        assert!(
+            codex.contains("6.8s · 17K in (73% cached) · 6 out"),
+            "{codex}"
+        );
+        // Claude: ACP inputTokens is only the uncached tail (4); the context came from cache.
+        let mut claude = Usage::new(46_917, 4, 105);
+        claude.cached_read_tokens = Some(37_112);
+        claude.cached_write_tokens = Some(9_696);
+        let claude = footer(claude, Some(0.0881));
+        assert!(
+            claude.contains("47K in (79% cached) · 105 out · $0.09"),
+            "{claude}"
+        );
+        // Sub-cent cost and empty usage stay out of the line (a turn stopped before output).
+        let empty = footer(Usage::new(0, 0, 0), Some(0.001));
+        assert!(empty.contains("\"text\":\"6.8s\""), "{empty}");
+    }
 
     #[test]
     fn context_totals_read_like_omp() {

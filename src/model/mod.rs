@@ -78,7 +78,9 @@ pub enum EntryKind {
 #[derive(Debug, Clone)]
 pub struct TurnSummary {
     pub duration: std::time::Duration,
-    pub tokens: Option<(u64, u64, u64)>,
+    /// The turn's own token usage (`PromptResponse.usage`): per turn, not cumulative.
+    #[cfg(feature = "unstable_end_turn_token_usage")]
+    pub tokens: Option<agent_client_protocol::schema::v1::Usage>,
     pub cost: Option<(String, f64)>,
     /// Why the turn ended, when it did not simply finish (`end_turn`).
     pub stop: Option<StopReason>,
@@ -144,7 +146,6 @@ pub struct Model {
     pub turn_summaries: std::collections::HashMap<u64, TurnSummary>,
     turn_started: Option<Instant>,
     turn_cost_at_start: Option<(String, f64)>,
-    turn_context_at_start: Option<u64>,
     pub permissions: VecDeque<PendingPermission>,
     pub elicitations: VecDeque<PendingElicitation>,
     pub dialogs: VecDeque<PendingId>,
@@ -181,7 +182,6 @@ impl Default for Model {
             turn_summaries: Default::default(),
             turn_started: None,
             turn_cost_at_start: None,
-            turn_context_at_start: None,
             transcript: Vec::new(),
             permissions: VecDeque::new(),
             elicitations: VecDeque::new(),
@@ -231,7 +231,6 @@ impl Model {
                 .as_ref()
                 .and_then(|usage| usage.cost.as_ref())
                 .map(|cost| (cost.currency.clone(), cost.amount));
-            self.turn_context_at_start = self.content.usage.as_ref().map(|usage| usage.used);
             self.turn = Turn::Running {
                 since: Instant::now(),
                 cancelling: false,
@@ -290,7 +289,6 @@ impl Model {
                 self.turn_summaries.clear();
                 self.turn_started = None;
                 self.turn_cost_at_start = None;
-                self.turn_context_at_start = None;
                 self.local_echo = None;
                 self.queued_echoes.clear();
                 self.transcript.clear();
@@ -411,32 +409,18 @@ impl Model {
                 if let Ok(response) = &result
                     && let Some(usage) = &response.usage
                 {
-                    let delta = self.content.turn_usage(usage);
-                    self.push(EntryKind::Usage(delta));
+                    self.push(EntryKind::Usage(usage.clone()));
                 }
                 let result = result.map(|response| response.stop_reason);
-                let tokens = {
-                    #[cfg(feature = "unstable_end_turn_token_usage")]
-                    {
-                        self.transcript.last().and_then(|entry| match &entry.kind {
-                            EntryKind::Usage(usage) => Some((
-                                usage.total_tokens,
-                                usage.input_tokens,
-                                usage.output_tokens,
-                            )),
-                            _ => None,
-                        })
-                    }
-                    #[cfg(not(feature = "unstable_end_turn_token_usage"))]
-                    {
-                        None
-                    }
-                };
+                #[cfg(feature = "unstable_end_turn_token_usage")]
+                let tokens = self.transcript.last().and_then(|entry| match &entry.kind {
+                    EntryKind::Usage(usage) => Some(usage.clone()),
+                    _ => None,
+                });
                 let cost = self.content.usage.as_ref().and_then(|usage| usage.cost.as_ref()).map(|current| {
                     let before = self.turn_cost_at_start.as_ref().filter(|(currency, _)| currency == &current.currency).map_or(0.0, |(_, amount)| *amount);
                     (current.currency.clone(), (current.amount - before).max(0.0))
                 });
-                let tokens = tokens.or_else(|| self.content.usage.as_ref().and_then(|usage| self.turn_context_at_start.map(|start| (usage.used.saturating_sub(start), 0, 0))));
                 let stop = match &result {
                     Ok(StopReason::EndTurn) | Err(_) => None,
                     Ok(reason) => Some(*reason),
@@ -445,7 +429,11 @@ impl Model {
                 // without one, so it never lands detached at the end of the transcript.
                 let summarized = if let Some(start) = self.turn_started.take() {
                     self.turn_summaries.insert(self.active_turn_id, TurnSummary {
-                        duration: start.elapsed(), tokens, cost, stop,
+                        duration: start.elapsed(),
+                        #[cfg(feature = "unstable_end_turn_token_usage")]
+                        tokens,
+                        cost,
+                        stop,
                     });
                     true
                 } else {
@@ -488,7 +476,6 @@ impl Model {
                     };
                     self.turn_started = Some(Instant::now());
                     self.turn_cost_at_start = self.content.usage.as_ref().and_then(|usage| usage.cost.as_ref()).map(|cost| (cost.currency.clone(), cost.amount));
-                    self.turn_context_at_start = self.content.usage.as_ref().map(|usage| usage.used);
                 } else {
                     self.turn = Turn::Idle;
                 }
