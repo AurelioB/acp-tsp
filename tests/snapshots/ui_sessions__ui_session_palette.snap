@@ -79,6 +79,22 @@ expression: "layer(View::new().layer(Palette::new(Kind::Commands).render(&model)
                 ],
                 "value": "acp-tsp"
               }
+            },
+            {
+              "id": "layer.0.list.client:usage",
+              "k": "item",
+              "p": {
+                "label": "usage",
+                "key": "client:usage",
+                "icon": "settings",
+                "detail": [
+                  {
+                    "t": "Usage report",
+                    "s": "muted"
+                  }
+                ],
+                "value": "acp-tsp"
+              }
             }
           ]
         }

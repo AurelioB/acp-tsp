@@ -3,6 +3,7 @@
 pub mod content;
 pub mod ext;
 pub mod session;
+pub mod usage;
 use std::{collections::VecDeque, path::PathBuf, time::Instant};
 
 use agent_client_protocol::schema::v1::{
@@ -15,6 +16,7 @@ use crate::event::{BridgeEvent, PendingId, SessionStartKind};
 #[cfg(feature = "unstable_plan_operations")]
 use content::plan_id;
 use session::{SessionCatalog, SessionMetadata};
+use usage::UsageReport;
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -151,6 +153,8 @@ pub struct Model {
     pub dialogs: VecDeque<PendingId>,
     pub content: content::ContentState,
     pub ext: ext::ExtensionState,
+    pub usage_report: UsageReport,
+    hidden_usage: bool,
     pub errors: Vec<String>,
     pub notices: Vec<String>,
     pub debug_updates: Vec<String>,
@@ -188,6 +192,8 @@ impl Default for Model {
             dialogs: VecDeque::new(),
             content: content::ContentState::default(),
             ext: ext::ExtensionState::default(),
+            usage_report: UsageReport::default(),
+            hidden_usage: false,
             errors: Vec::new(),
             notices: Vec::new(),
             debug_updates: Vec::new(),
@@ -250,6 +256,21 @@ impl Model {
         });
     }
 
+    /// Start a local adapter command only when idle; nothing from this turn enters history.
+    pub fn begin_usage(&mut self) {
+        self.usage_report.pending = false;
+        self.usage_report.fetching = true;
+        self.usage_report.error = None;
+        self.usage_report.raw.clear();
+        self.hidden_usage = true;
+        self.active_turn_id += 1;
+        self.local_echo = None;
+        self.turn = Turn::Running {
+            since: Instant::now(),
+            cancelling: false,
+        };
+    }
+
     /// A steering message belongs to the active turn, not the next-prompt queue.
     pub fn steered(&mut self, text: String, blocks: Vec<ContentBlock>) {
         self.local_echo = Some((text, 0));
@@ -289,6 +310,8 @@ impl Model {
                 self.turn_summaries.clear();
                 self.turn_started = None;
                 self.turn_cost_at_start = None;
+                self.hidden_usage = false;
+                self.usage_report = UsageReport::default();
                 self.local_echo = None;
                 self.queued_echoes.clear();
                 self.transcript.clear();
@@ -402,6 +425,33 @@ impl Model {
             BridgeEvent::Resolved(id) => self.resolve_dialog(id),
             BridgeEvent::Terminal(event) => self.content.terminal(event),
             BridgeEvent::TurnEnded(result) => {
+                if self.hidden_usage {
+                    self.hidden_usage = false;
+                    self.usage_report.fetching = false;
+                    self.usage_report.checked = Some(std::time::SystemTime::now());
+                    if let Err(error) = result {
+                        self.usage_report.error = Some(error);
+                        self.usage_report.windows.clear();
+                        self.usage_report.credits = None;
+                        self.usage_report.plan = None;
+                    } else if let Some(command) = self.usage_command() {
+                        if let Some((windows, credits, plan)) =
+                            usage::parse(&self.usage_report.raw, command)
+                        {
+                            self.usage_report.windows = windows;
+                            self.usage_report.credits = credits;
+                            self.usage_report.plan = plan;
+                        } else {
+                            self.usage_report.windows.clear();
+                            self.usage_report.credits = None;
+                            self.usage_report.plan = None;
+                            self.usage_report.error =
+                                Some("Limits unavailable; see Details for the agent response".into());
+                        }
+                    }
+                    self.turn = Turn::Idle;
+                    return;
+                }
                 if let Ok(response) = &result {
                     self.ext.usage(response.meta.as_ref());
                 }
@@ -493,6 +543,9 @@ impl Model {
                 self.ext.auth = None;
                 self.ext.account_details = false;
                 self.ext.goal_open = false;
+                self.hidden_usage = false;
+                self.usage_report.fetching = false;
+                self.usage_report.pending = false;
                 self.loading_info = None;
                 self.queued = 0;
             }
@@ -515,6 +568,28 @@ impl Model {
         self.permissions.iter().find(|p| p.id == *id)
     }
 
+    /// The agent-local command with no model call; unknown agents have no usage command.
+    pub fn usage_command(&self) -> Option<&'static str> {
+        let name = self
+            .agent
+            .as_ref()
+            .map_or(self.launch_name.as_str(), |agent| agent.name.as_str());
+        if name.to_ascii_lowercase().contains("claude") {
+            Some("/usage")
+        } else if name.to_ascii_lowercase().contains("codex") {
+            Some("/status")
+        } else if self
+            .sessions
+            .commands
+            .iter()
+            .any(|command| command.name == "usage")
+        {
+            Some("/usage")
+        } else {
+            None
+        }
+    }
+
     fn chunk(&mut self, kind: &'static str, chunk: ContentChunk) {
         let block = chunk.content;
         let text = match &block {
@@ -522,6 +597,12 @@ impl Model {
             ContentBlock::ResourceLink(link) => resource_link_markdown(&link.name, &link.uri),
             _ => String::new(),
         };
+        if self.hidden_usage {
+            if kind == "agent" {
+                self.usage_report.raw.push_str(&text);
+            }
+            return;
+        }
         // Tern shows a locally submitted prompt immediately. Only discard
         // ACP user chunks matching the remaining prefix of that exact prompt.
         if kind == "user"

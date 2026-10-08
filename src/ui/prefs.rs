@@ -195,3 +195,58 @@ pub fn chip(model: &Model, category: SessionConfigOptionCategory) -> Option<Stri
         _ => None,
     }
 }
+
+/// Non-standard select settings surface only while different from the agent's default.
+pub fn active_chips(model: &Model) -> Vec<(String, String, UiCmd)> {
+    let Some(options) = model
+        .session
+        .as_ref()
+        .and_then(|s| s.config_options.as_ref())
+    else {
+        return Vec::new();
+    };
+    options
+        .iter()
+        .filter_map(|option| {
+            let category = option.category.as_ref()?;
+            if matches!(
+                category,
+                SessionConfigOptionCategory::Mode
+                    | SessionConfigOptionCategory::Model
+                    | SessionConfigOptionCategory::ThoughtLevel
+            ) {
+                return None;
+            }
+            let SessionConfigKind::Select(select) = &option.kind else {
+                return None;
+            };
+            let (first, current) = match &select.options {
+                SessionConfigSelectOptions::Ungrouped(items) => (
+                    items.first()?,
+                    items
+                        .iter()
+                        .find(|item| item.value == select.current_value)?,
+                ),
+                SessionConfigSelectOptions::Grouped(groups) => (
+                    groups.iter().flat_map(|group| &group.options).next()?,
+                    groups
+                        .iter()
+                        .flat_map(|group| &group.options)
+                        .find(|item| item.value == select.current_value)?,
+                ),
+                _ => return None,
+            };
+            if select.current_value == first.value {
+                return None;
+            }
+            Some((
+                option.id.to_string(),
+                current.name.clone(),
+                UiCmd::SetConfigOption {
+                    config_id: option.id.clone(),
+                    value: SessionConfigOptionValue::value_id(first.value.clone()),
+                },
+            ))
+        })
+        .collect()
+}

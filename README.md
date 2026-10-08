@@ -137,6 +137,9 @@ issue, not a general agy requirement.
 | ↑ ↓, Enter, Escape (picker) | choose, activate, or close the picker |
 | `r`, `d` (session picker) | resume; delete after pressing `d` again to confirm |
 | Shift+Tab | cycle mode (prefers the agent's mode config option) |
+| `/usage` / click composer usage or context meter | open usage dashboard (Overview, Details, Refresh) |
+| r / Escape (usage dashboard) | refresh the adapter's local usage report / close |
+| Click active configuration chip (for example, Codex Plan) | return that select option to its default |
 | ↑ ↓ | prompt history |
 | Escape, Ctrl+C | cancel the running turn |
 | 1–9, Escape | answer the permission dialog (Escape rejects) |
@@ -156,10 +159,20 @@ images and audio are sent only when their respective prompt capabilities are adv
 The slash picker separates agent commands from `acp-tsp` actions, with agent commands
 first; client actions are labeled `acp-tsp ·` so identical names (such as Claude's
 `/config`) are distinguishable. Agent commands are inserted into the composer and
-sent as ordinary prompt text on Enter. A client command typed or pasted in full
+sent as ordinary prompt text on Enter, except Claude's `/usage`, which opens the
+client usage dashboard. A client command typed or pasted in full
 (`/sessions` + Enter) runs directly unless the agent advertises the same name;
-the agent command wins. `/goal` opens a goal-control form only when the agent
-advertises `_session/goal` (some adapters expose it only to AIR clients).
+the agent command wins (except `/usage`). `/usage` uses Claude's local `/usage` or
+Codex's local `/status` behind the scenes, only while idle, without adding a
+transcript turn. Refresh with `r`; Details shows the unmodified agent report.
+Codex's `/status` remains available as an ordinary agent command.
+The dashboard also totals this session's reported tokens, cost, context and turn
+durations; no cross-session activity is inferred. The composer usage text and
+context meter open it. Codex's `collaboration_mode` Plan setting appears as a
+chip while active; click to return to default, use `/plan` or `/config` to enable
+it again. Plan mode enables Codex question prompts (`request_user_input`).
+`/goal` opens a goal-control form only when the agent advertises `_session/goal`
+(some adapters expose it only to AIR clients).
 The dock account chip opens account details on click; the account e-mail is hidden
 until this sheet is opened. Session settings use a native preferences sheet; the
 provider picker opens a provider's routing preferences, where saving replaces
@@ -190,6 +203,8 @@ potentially secrets**: protect the file and review/sanitize before sharing.
 Sanitized adapter transcripts under `tests/fixtures/{claude,codex}/` come from
 Claude 0.87.0 (Read tool plus session/list) and Codex 2.1.1 (terminal-output
 command and read-only plan review); `tests/replay_agents.rs` replays them
-through the ACP bridge, model, and view.
+through the ACP bridge, model, and view. The `usage.md` and `status.md` fixtures
+are captured adapter-local usage reports, with account e-mail, workspace path
+and session ID sanitized where present.
 
 See [docs/SUPPORT.md](docs/SUPPORT.md) for what is verified per agent, and [docs/PLAN.md](docs/PLAN.md) for protocol research, scope and planned stages.

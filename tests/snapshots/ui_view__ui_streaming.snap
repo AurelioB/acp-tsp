@@ -508,6 +508,19 @@ expression: wire(&model)
                 }
               },
               {
+                "id": "dock.editor.bar.usage",
+                "k": "text",
+                "p": {
+                  "text": "1 turn",
+                  "key": "usage",
+                  "role": "omp.composer.usage",
+                  "title": "Usage report",
+                  "actions": {
+                    "click": "click"
+                  }
+                }
+              },
+              {
                 "id": "dock.editor.bar.send",
                 "k": "text",
                 "p": {

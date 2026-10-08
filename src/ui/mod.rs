@@ -13,6 +13,7 @@ pub mod prefs;
 #[cfg(feature = "unstable_llm_providers")]
 mod providers;
 mod theme;
+mod usage;
 pub mod view;
 
 use std::path::PathBuf;
@@ -64,7 +65,11 @@ pub enum Msg {
     Focus,
     Submit,
     Interrupt,
-    ContextDetails,
+    UsageOpen,
+    UsageRefresh,
+    UsageClose,
+    UsageTab(String),
+    ConfigChip(String),
     ModelPicker,
     EffortPicker,
     Restart,
@@ -206,8 +211,11 @@ fn run_with_controller(
             || model.auth.is_some()
             || model.ext.goal_open
             || model.ext.account_details;
+        let usage_visible = model.usage_report.open && !dialog_before;
         let composer_blocked = dialog_before
             || model.exited.is_some()
+            || model.usage_report.open
+            || model.usage_report.fetching
             || config_open
             || palette.as_ref().is_some_and(|p| p.kind != Kind::Commands);
         let action = match input {
@@ -216,7 +224,20 @@ fn run_with_controller(
                 if key.typed().is_none() {
                     tracing::debug!(name = %key.name, ctrl = key.ctrl, "key");
                 }
-                if (model.ext.goal_open || model.ext.account_details) && key.is("escape") {
+                if usage_visible && key.is("escape") {
+                    model.usage_report.open = false;
+                    Action::Changed
+                } else if usage_visible && key.is("r") {
+                    model.usage_report.pending = true;
+                    Action::Changed
+                } else if usage_visible && key.is("tab") {
+                    model.usage_report.details = !model.usage_report.details;
+                    Action::Changed
+                } else if usage_visible
+                    || (model.usage_report.fetching && !dialog_before && !key.is("escape"))
+                {
+                    Action::None
+                } else if (model.ext.goal_open || model.ext.account_details) && key.is("escape") {
                     model.ext.goal_open = false;
                     model.ext.account_details = false;
                     Action::Changed
@@ -291,7 +312,7 @@ fn run_with_controller(
                         action
                     } else if key.is("enter")
                         && active.kind == Kind::Commands
-                        && composer.text == "/model"
+                        && matches!(composer.text.as_str(), "/model" | "/usage")
                         && let Some(choice) = palette::typed_client_command(&composer.text, &model)
                     {
                         palette_choice(choice, &mut palette, &mut config_open, &mut composer)
@@ -379,15 +400,24 @@ fn run_with_controller(
                     model.cancel();
                     Action::Command(UiCmd::Cancel)
                 }
-                Msg::ContextDetails => {
-                    if let Some(usage) = &model.content.usage {
-                        model.ext.toast =
-                            Some(format!("Context: {} of {} tokens", usage.used, usage.size));
-                        Action::Changed
-                    } else {
-                        Action::None
-                    }
+                Msg::UsageOpen => Action::OpenUsage,
+                Msg::UsageRefresh if model.usage_report.open => {
+                    model.usage_report.pending = true;
+                    Action::Changed
                 }
+                Msg::UsageClose if model.usage_report.open => {
+                    model.usage_report.open = false;
+                    Action::Changed
+                }
+                Msg::UsageTab(tab) if model.usage_report.open => {
+                    model.usage_report.details = tab == "details";
+                    Action::Changed
+                }
+                Msg::ConfigChip(id) => prefs::active_chips(&model)
+                    .into_iter()
+                    .find(|(option, _, _)| option == &id)
+                    .map_or(Action::None, |(_, _, cmd)| Action::Command(cmd)),
+                Msg::UsageRefresh | Msg::UsageClose | Msg::UsageTab(_) => Action::None,
                 Msg::Restart if model.exited.is_some() && model.restartable => {
                     model.exited = None;
                     model.session = None;
@@ -719,6 +749,16 @@ fn run_with_controller(
                 model.ext.goal_open = true;
                 changed = true;
             }
+            Action::OpenUsage => {
+                palette = None;
+                config_open = false;
+                model.usage_report.open = true;
+                model.usage_report.details = false;
+                if model.usage_report.checked.is_none() && !model.usage_report.fetching {
+                    model.usage_report.pending = true;
+                }
+                changed = true;
+            }
             Action::AuthTerminal(index) => {
                 let outcome = model
                     .auth
@@ -789,6 +829,38 @@ fn run_with_controller(
         if dialog_before && model.dialogs.front().is_none() && model.auth.is_none() && !picker.open
         {
             session.focus(sf, Some(crate::ui::view::EDITOR_ID))?;
+        }
+        if model.usage_report.pending && model.usage_command().is_none() {
+            model.usage_report.pending = false;
+            model.usage_report.error =
+                Some("This agent does not offer a local usage command".into());
+            changed = true;
+        }
+        if model.usage_report.pending
+            && !model.usage_report.fetching
+            && matches!(model.turn, crate::model::Turn::Idle)
+            && model.queued == 0
+            && model.session.is_some()
+            && model.exited.is_none()
+            && let Some(command) = model.usage_command()
+        {
+            let command = command.to_owned();
+            model.begin_usage();
+            if cmds
+                .send(UiCmd::Prompt(vec![
+                    agent_client_protocol::schema::v1::ContentBlock::Text(
+                        agent_client_protocol::schema::v1::TextContent::new(command),
+                    ),
+                ]))
+                .is_err()
+            {
+                model.usage_report.fetching = false;
+                model.usage_report.error = Some("Agent controller unavailable".into());
+                model.apply(BridgeEvent::AgentExited {
+                    reason: "Agent controller unavailable".into(),
+                });
+            }
+            changed = true;
         }
         if changed {
             content::upload(&mut session, &mut model)?;
@@ -862,7 +934,9 @@ fn screen(
         && !model.ext.account_details
         && !model.ext.goal_open
     {
-        if let Some(palette) = palette {
+        if model.usage_report.open {
+            view = view.layer(usage::render(model));
+        } else if let Some(palette) = palette {
             view = view.layer(view::layer(palette.render(model)));
         } else if config_open {
             view = view.layer(view::layer(prefs::render(model)));
@@ -924,6 +998,15 @@ fn palette_choice(
             }
             *palette = None;
             Action::OpenGoal
+        }
+        Choice::Usage => {
+            if composer.text.starts_with('/') {
+                for _ in 0..composer.text.chars().count() {
+                    composer.backspace();
+                }
+            }
+            *palette = None;
+            Action::OpenUsage
         }
         Choice::Prefs => {
             if composer.text.starts_with('/') {

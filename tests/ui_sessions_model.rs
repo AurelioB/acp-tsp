@@ -284,3 +284,29 @@ fn session_picker_load_resume_delete_and_page_cursor() {
         Choice::Command(UiCmd::ListSessions { cursor: Some(cursor) }) if cursor == "next"
     ));
 }
+
+#[test]
+fn hidden_usage_turn_captures_text_without_transcript_or_turn_totals() {
+    use agent_client_protocol::schema::v1::{PromptResponse, StopReason};
+    let mut model = Model::default();
+    model.launch_name = "Codex".into();
+    start(&mut model);
+    model.begin_usage();
+    model.apply(BridgeEvent::Update(Box::new(
+        SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            "/status",
+        )))),
+    )));
+    model.apply(BridgeEvent::Update(Box::new(
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            "**5h limit:** 92% left (resets 14:00)",
+        )))),
+    )));
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+        StopReason::EndTurn,
+    )))));
+    assert!(model.transcript.is_empty());
+    assert!(model.turn_summaries.is_empty());
+    assert_eq!(model.usage_report.windows[0].used_pct, 8.0);
+    assert!(matches!(model.turn, acp_tsp::model::Turn::Idle));
+}

@@ -665,7 +665,7 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
                     usage.size,
                     ratio * 100.0
                 ))
-                .on_click(Msg::ContextDetails),
+                .on_click(Msg::UsageOpen),
         );
     }
     editor = editor.child(
@@ -741,6 +741,17 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
                 .icon("mode"),
         );
     }
+    for (id, label, _) in prefs::active_chips(model) {
+        extras = extras.child(
+            ui::seg(label)
+                .key(format!("config.{id}"))
+                .role("omp.composer.fact")
+                .priority(6.0)
+                .icon("mode")
+                .title("Return to default setting")
+                .on_click(Msg::ConfigChip(id)),
+        );
+    }
     if let Some(session) = &model.session {
         let folder = session.cwd.file_name().map_or_else(
             || session.cwd.display().to_string(),
@@ -789,24 +800,24 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
         .align(Align::Center)
         .child(model_chip)
         .child(extras);
-    if let Some(cost) = model
-        .content
-        .usage
-        .as_ref()
-        .and_then(|usage| usage.cost.as_ref())
-    {
-        let symbol = if cost.currency == "USD" {
-            "$"
-        } else {
-            cost.currency.as_str()
-        };
-        bar = bar.child(
-            ui::text(format!("{symbol}{:.2}", cost.amount))
-                .key("usage")
-                .role("omp.composer.usage")
-                .title("Session cost"),
-        );
-    }
+    let cost = super::usage::session_cost(model);
+    let label = if let Some((currency, amount)) = &cost {
+        format!(
+            "{}{amount:.2}",
+            if currency == "USD" { "$" } else { currency }
+        )
+    } else {
+        let count =
+            model.turn_summaries.len() + usize::from(running && !model.usage_report.fetching);
+        format!("{count} turn{}", if count == 1 { "" } else { "s" })
+    };
+    bar = bar.child(
+        ui::text(label)
+            .key("usage")
+            .role("omp.composer.usage")
+            .title("Usage report")
+            .on_click(Msg::UsageOpen),
+    );
     bar = if running {
         bar.child(
             ui::text("Stop")
@@ -870,7 +881,7 @@ fn grouped(count: u64) -> String {
 }
 
 /// Token counts the way omp's context meter shows them: `1M`, `258K`, `950`.
-fn compact_tokens(count: u64) -> String {
+pub(super) fn compact_tokens(count: u64) -> String {
     match count {
         n if n >= 1_000_000 && n % 1_000_000 == 0 => format!("{}M", n / 1_000_000),
         n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1_000_000.0),
@@ -950,5 +961,89 @@ mod tests {
             dock.contains(&format!("\"id\":\"{EDITOR_ID}\",\"k\":\"editor\"")),
             "{dock}"
         );
+    }
+    #[test]
+    fn dashboard_and_plan_chip_render_with_omp_roles() {
+        use agent_client_protocol::schema::v1::{
+            SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption, SessionId,
+        };
+        let mut model = Model::default();
+        model.launch_name = "Codex".into();
+        model.apply(crate::event::BridgeEvent::SessionStarted {
+            session_id: SessionId::new("session"),
+            kind: crate::event::SessionStartKind::New,
+            cwd: std::path::PathBuf::from("/tmp"),
+            additional_dirs: vec![],
+            modes: None,
+            config_options: Some(vec![
+                SessionConfigOption::select(
+                    "collaboration_mode",
+                    "Collaboration mode",
+                    "plan",
+                    vec![
+                        SessionConfigSelectOption::new("default", "Default"),
+                        SessionConfigSelectOption::new("plan", "Plan"),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::Other(
+                    "collaboration_mode".into(),
+                )),
+            ]),
+        });
+        let dock = serde_json::to_string(
+            &tern_sdk::reconcile::Doc::from_view(view(
+                &model,
+                &Composer::default(),
+                &Capabilities::default(),
+            ))
+            .unwrap()
+            .regions()[1]
+                .as_ref()
+                .unwrap()
+                .wire(),
+        )
+        .unwrap();
+        assert!(dock.contains("omp.composer.usage"), "{dock}");
+        assert!(dock.contains("config.collaboration_mode"), "{dock}");
+        assert!(dock.contains("Plan"), "{dock}");
+        model.usage_report.open = true;
+        model.usage_report.raw = "**5h limit:** 92% left (resets 14:00)".into();
+        model
+            .usage_report
+            .windows
+            .push(crate::model::usage::LimitWindow {
+                label: "5h limit".into(),
+                used_pct: 8.0,
+                resets: "resets 14:00".into(),
+            });
+        let overlay = serde_json::to_string(
+            &tern_sdk::reconcile::Doc::from_view(
+                view(&model, &Composer::default(), &Capabilities::default())
+                    .layer(super::super::usage::render(&model)),
+            )
+            .unwrap()
+            .regions()[2]
+                .as_ref()
+                .unwrap()
+                .wire(),
+        )
+        .unwrap();
+        assert!(overlay.contains("omp.usage.window"), "{overlay}");
+        assert!(overlay.contains("92% left"), "{overlay}");
+        assert!(overlay.contains("This session"), "{overlay}");
+        model.usage_report.details = true;
+        let details = serde_json::to_string(
+            &tern_sdk::reconcile::Doc::from_view(
+                view(&model, &Composer::default(), &Capabilities::default())
+                    .layer(super::super::usage::render(&model)),
+            )
+            .unwrap()
+            .regions()[2]
+                .as_ref()
+                .unwrap()
+                .wire(),
+        )
+        .unwrap();
+        assert!(details.contains("**5h limit:**"), "{details}");
     }
 }

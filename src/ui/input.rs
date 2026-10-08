@@ -18,6 +18,7 @@ pub enum Action {
     Changed,
     Command(UiCmd),
     OpenGoal,
+    OpenUsage,
     AuthTerminal(usize),
     Quit,
 }
@@ -161,6 +162,10 @@ pub fn submit_queued(model: &mut Model, composer: &mut Composer) -> Action {
 fn submit_with_queue(model: &mut Model, composer: &mut Composer, queue: bool) -> Action {
     if composer.text.trim().is_empty() {
         return Action::None;
+    }
+    if composer.text.trim() == "/usage" {
+        composer.take();
+        return Action::OpenUsage;
     }
     let prompt = if let Some(session) = &model.session {
         match super::attach::prompt(

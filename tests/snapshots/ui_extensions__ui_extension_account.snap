@@ -120,6 +120,19 @@ expression: "normal[\"dock\"]"
               ]
             },
             {
+              "id": "dock.editor.bar.usage",
+              "k": "text",
+              "p": {
+                "text": "0 turns",
+                "key": "usage",
+                "role": "omp.composer.usage",
+                "title": "Usage report",
+                "actions": {
+                  "click": "click"
+                }
+              }
+            },
+            {
               "id": "dock.editor.bar.send",
               "k": "kbd",
               "p": {

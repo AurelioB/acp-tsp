@@ -31,7 +31,8 @@ Status meanings:
 | session/resume, close, delete, fork | yes | fake | fake | unknown |
 | modes / config options / model picker | yes | live (chips, sheet) | live (Shift+Tab mode, picker) | unknown |
 | slash commands, `@` mentions | yes | live | live (`/`) | unknown |
-| elicitation: form | yes | live (AskUserQuestion) | fake | unknown |
+| usage dashboard (hidden local command, limits, session totals) | yes | live (`/usage`) | live (`/status`) | unknown |
+| elicitation: form | yes | live (AskUserQuestion) | live in Plan mode (`request_user_input`) | unknown |
 | elicitation: URL | yes | fake | fake (device-code login uses it) | unknown |
 | usage_update (context, cost) | yes | live | live (context only; ChatGPT plans report no cost) | unknown |
 | end-turn token usage (single model request per turn) | yes | live, fixture | live, fixture | unknown |
@@ -41,7 +42,7 @@ Status meanings:
 | steering (`_session/steering`) | yes | live | disabled: the adapter ignores `idleBehavior` (`quirks::steering`) | unknown |
 | `_auth/status_update` account chip | yes | live | live | unknown |
 | `_claude/rateLimit` banner | yes | fake | n/a | n/a |
-| Codex 5h/weekly limits | no | n/a | n/a (agent): only `/status` text, no data | n/a |
+| Codex 5h/weekly limits | yes | n/a | weekly live; 5h format supported (adapter source) | n/a |
 | goal / async tasks | no | n/a (agent): JetBrains AIR clients only | n/a (agent): JetBrains AIR clients only | n/a |
 | notices, compaction, subagents, providers (unstable) | yes | fake | fake | unknown |
 | configured MCP servers | yes | fake | fake | unknown |
@@ -52,5 +53,11 @@ Status meanings:
 Other ACP agents (Gemini CLI, OpenCode, Goose, …) start via `acp-tsp -- <command>` but are **untested**.
 
 Usage numbers come from `PromptResponse.usage`, which ACP defines as per-turn usage. "In" counts uncached input plus cache reads and writes. Each turn re-sends the whole conversation, so tens of thousands of input tokens on one turn are normal; the cached share shows how much of that was cheap. When an agent reports no usage, only the duration is shown. How the adapter sums several model requests within one turn is its own responsibility. acp-tsp displays the reported totals and has not compared them with per-request numbers.
+
+The client `/usage` dashboard queries the active adapter's local command only when idle. Claude's
+`/usage` reports percent **used**; Codex's `/status` reports percent **left**. Both are normalized
+to a used-fraction bar labeled with percent left. Query turns are hidden from transcript and per-session turn totals.
+The adapter's raw markdown remains available in Details (including account information).
+Other agents require an advertised `/usage` command; unsupported agents show session totals only.
 
 Fixture tests: `tests/replay_agents.rs` with `tests/fixtures/{claude,codex}/*.jsonl`. Footer arithmetic: `src/ui/view.rs::tests::turn_footer_counts_cached_context_as_input`.

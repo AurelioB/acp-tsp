@@ -47,6 +47,7 @@ pub enum Choice {
     Open(Kind, Option<UiCmd>),
     Prefs,
     Goal,
+    Usage,
     Quit,
 }
 
@@ -66,6 +67,9 @@ pub fn typed_client_command(text: &str, model: &Model) -> Option<Choice> {
     }
     if name == "model" && has_category(model, SessionConfigOptionCategory::Model) {
         return Some(Choice::Open(Kind::Model, None));
+    }
+    if name == "usage" {
+        return Some(Choice::Usage);
     }
     let mut palette = Palette::new(Kind::Commands);
     let rows = palette.rows(model);
@@ -176,6 +180,7 @@ impl Palette {
                         "Control agent goal",
                         model.session.is_some() && model.ext.goal.is_some(),
                     ),
+                    ("usage", "Usage report", true),
                 ] {
                     if available {
                         rows.push(Row {
@@ -513,6 +518,9 @@ impl Palette {
         let Some(row) = self.rows(model).get(self.selected).cloned() else {
             return Choice::Changed;
         };
+        if row.id == "agent:usage" || row.id == "client:usage" {
+            return Choice::Usage;
+        }
         if let Some(command) = row.id.strip_prefix("agent:") {
             return Choice::Insert(format!("/{command} "));
         }
