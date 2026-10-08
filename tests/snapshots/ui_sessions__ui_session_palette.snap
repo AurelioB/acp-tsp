@@ -4,37 +4,85 @@ expression: "layer(View::new().layer(Palette::new(Kind::Commands).render(&model)
 ---
 {
   "id": "layer",
-  "k": "picker",
+  "k": "overlay",
   "p": {
-    "key": "palette",
-    "title": "Commands",
-    "query": "",
-    "items": [
-      {
-        "id": "client:new",
-        "label": "/new",
-        "detail": "acp-tsp · Start a fresh session"
+    "key": "complete",
+    "role": "omp.autocomplete",
+    "anchor": {
+      "caret": "dock.ed"
+    }
+  },
+  "c": [
+    {
+      "id": "layer.0",
+      "k": "col",
+      "p": {
+        "role": "omp.select"
       },
-      {
-        "id": "client:restart",
-        "label": "/restart",
-        "detail": "acp-tsp · Restart agent"
-      },
-      {
-        "id": "client:quit",
-        "label": "/quit",
-        "detail": "acp-tsp · Quit"
-      }
-    ],
-    "order": [
-      {
-        "group": "acp-tsp",
-        "label": "acp-tsp"
-      },
-      "client:new",
-      "client:restart",
-      "client:quit"
-    ],
-    "selected": "client:new"
-  }
+      "c": [
+        {
+          "id": "layer.0.list",
+          "k": "list",
+          "p": {
+            "key": "list",
+            "selected": "client:new",
+            "empty": "No items",
+            "max": {
+              "lines": 10
+            }
+          },
+          "c": [
+            {
+              "id": "layer.0.list.client:new",
+              "k": "item",
+              "p": {
+                "label": "new",
+                "key": "client:new",
+                "icon": "settings",
+                "detail": [
+                  {
+                    "t": "acp-tsp · Start a fresh session",
+                    "s": "muted"
+                  }
+                ],
+                "value": "acp-tsp"
+              }
+            },
+            {
+              "id": "layer.0.list.client:restart",
+              "k": "item",
+              "p": {
+                "label": "restart",
+                "key": "client:restart",
+                "icon": "settings",
+                "detail": [
+                  {
+                    "t": "acp-tsp · Restart agent",
+                    "s": "muted"
+                  }
+                ],
+                "value": "acp-tsp"
+              }
+            },
+            {
+              "id": "layer.0.list.client:quit",
+              "k": "item",
+              "p": {
+                "label": "quit",
+                "key": "client:quit",
+                "icon": "settings",
+                "detail": [
+                  {
+                    "t": "acp-tsp · Quit",
+                    "s": "muted"
+                  }
+                ],
+                "value": "acp-tsp"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
 }
