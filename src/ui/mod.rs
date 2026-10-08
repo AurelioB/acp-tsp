@@ -107,7 +107,10 @@ pub fn run_with_terminal(
         let composer_blocked = dialog_before || model.exited.is_some();
         let action =
             match input {
-                Input::Key(key) => input_state.key(&key, &mut model, &mut composer),
+                Input::Key(key) => {
+                    tracing::debug!(name = %key.name, ctrl = key.ctrl, "key");
+                    input_state.key(&key, &mut model, &mut composer)
+                }
                 Input::Msg(message, _) => match message {
                     Msg::Send(text) if !composer_blocked => {
                         // Tern sends the text it saw; ignore a stale duplicate after local submit.
@@ -161,7 +164,10 @@ pub fn run_with_terminal(
                     tracing::warn!("TSP surface gone");
                     Action::Quit
                 }
-                Input::Event(_) => Action::None,
+                Input::Event(event) => {
+                    tracing::debug!(ev = event.name(), "unhandled TSP event");
+                    Action::None
+                }
             };
         let mut changed = matches!(action, Action::Changed);
         match action {
