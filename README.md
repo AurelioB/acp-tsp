@@ -1,6 +1,8 @@
 # acp-tsp
 
-`acp-tsp` is an ACP client that runs in a Tern agent block and renders the conversation natively with Tern Surface Protocol (TSP). Stage 1 is in progress.
+`acp-tsp` is an ACP client that runs in a Tern agent block and renders the conversation natively with Tern Surface Protocol (TSP).
+
+Status: Stage 1 (basics) done: prompts, streamed answers/thoughts, tool calls with diffs, plans, permission dialogs, cancel, agent auth, confined `fs/*`, restart. Stages 2–3 are in progress; see [docs/PLAN.md](docs/PLAN.md).
 
 ## Requirements and installation
 
@@ -32,13 +34,30 @@ env = { EXAMPLE_SETTING = "value" }
 
 Built-in adapters are pinned: Claude `@agentclientprotocol/claude-agent-acp@0.87.0`, Codex `@agentclientprotocol/codex-acp@2.1.1`. The agy ACP server is not bundled; installation support is planned for Stage 3.
 
+## Keys
+
+| Key | Action |
+|---|---|
+| Enter / Shift+Enter | send / newline |
+| ↑ ↓ | prompt history |
+| Escape, Ctrl+C | cancel the running turn |
+| 1–9, Escape | answer the permission dialog (Escape rejects) |
+| r | restart an agent that exited |
+| Ctrl+D (empty composer), Ctrl+C twice | quit |
+
+Prompts typed during a turn are queued and sent when it ends.
+
 ## Logs and environment
 
-Runtime logs go to `$XDG_STATE_HOME/acp-tsp/acp-tsp.log`, falling back to `~/.local/state/acp-tsp/acp-tsp.log`. `ACP_TSP_LOG` sets the tracing filter (default `info`).
+Runtime logs go to `$XDG_STATE_HOME/acp-tsp/acp-tsp.log`, falling back to `~/.local/state/acp-tsp/acp-tsp.log`. `ACP_TSP_LOG` sets the level for acp-tsp (`debug`; default `info`); full directives such as `agent_client_protocol=debug` are taken as written, but dependency debug logs contain raw ACP payloads, including account e-mails.
 
 - `ACP_TSP_CONFIG`: configuration file path.
-- `ACP_TSP_TRACE_WIRE`: reserved for opt-in wire tracing; wire payloads may contain account information.
+- `ACP_TSP_TRACE_WIRE=1`: log every ACP line at `trace` (needs `ACP_TSP_LOG=trace`); payloads may contain account information.
 - `TERN_TSP=0`: disables TSP detection/rendering.
 - `TERN_TSP_RECORD`: records TSP traffic through `tern-sdk`.
+
+## Development
+
+`cargo test` runs unit and in-process fake-agent tests. `scripts/tern-e2e.sh` drives the release binary inside a headless `tern serve` for manual end-to-end checks against real agents.
 
 See [docs/PLAN.md](docs/PLAN.md) for protocol research, scope and planned stages.
