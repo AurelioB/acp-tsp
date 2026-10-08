@@ -38,7 +38,8 @@ The pane follows the session: its title is the session title (the agent's name u
 one, OSC 2), Tern's working indicator runs during a turn and pauses while a permission request,
 question or sign-in waits (OSC 9;4), and Tern's attention inbox gets "Permission needed",
 "Question waiting", "Stopped with error" and "Agent exited" notices (OSC 99). A finished turn
-is the progress clearing: in an agent block Tern records it as `agent-done` itself. Cancelled
+is the progress clearing: in an agent block Tern records it as `agent-done` itself; launched
+from a shell prompt, the busy indicator just stops and no inbox entry is added. Cancelled
 turns and hidden usage queries stay quiet.
 
 `setup-tern` updates `agent_command` in Tern's settings, making a timestamped backup first. It leaves `new_blocks` unchanged unless passed `--new-blocks-agent`; `--settings PATH` overrides settings location and `--print` prints the JSON snippet without writing. On Linux the default settings location is `$XDG_CONFIG_HOME/tern/settings.json` (or `~/.config/tern/settings.json`), a best-known default that may vary by Tern installation. macOS uses `~/Library/Application Support/Tern/settings.json`.
