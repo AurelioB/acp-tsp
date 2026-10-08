@@ -87,9 +87,17 @@ pub fn run_with_terminal(
     let mut composer = Composer::default();
     let mut input_state = InputState::default();
     // Drain before the first frame too: startup notifications may already be queued.
-    if let Some(batch) = events.drain() {
-        for event in batch {
-            model.apply(event);
+    match events.drain() {
+        Some(batch) => {
+            for event in batch {
+                model.apply(event);
+            }
+        }
+        None => {
+            model.restartable = !cmds.is_closed();
+            model.apply(crate::event::BridgeEvent::AgentExited {
+                reason: "Agent connection closed".into(),
+            });
         }
     }
     session.render(sf, view::view(&model, &composer, session.caps()))?;

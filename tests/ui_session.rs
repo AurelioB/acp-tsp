@@ -13,6 +13,7 @@ struct Pipes {
     input: VecDeque<Vec<u8>>,
     output: Vec<u8>,
     sent_keys: bool,
+    first_input: Option<Vec<u8>>,
     restored: bool,
 }
 
@@ -35,7 +36,9 @@ impl Terminal for Script {
             pipes.input.push_back(b"\x1b[?62;52;c".to_vec());
         } else if bytes.windows(7).any(|w| w == b"tsp;f;{") && !pipes.sent_keys {
             pipes.sent_keys = true;
-            pipes.input.push_back(b"hi\r".to_vec());
+            if let Some(input) = pipes.first_input.take() {
+                pipes.input.push_back(input);
+            }
         } else if bytes.windows(12).any(|w| w == b"main.entry.2") {
             pipes.input.push_back(b"\x04".to_vec());
         }
@@ -65,7 +68,10 @@ impl Terminal for Script {
 
 #[test]
 fn scripted_handshake_prompt_and_agent_frame() {
-    let pipes = Rc::new(RefCell::new(Pipes::default()));
+    let pipes = Rc::new(RefCell::new(Pipes {
+        first_input: Some(b"hi\r".to_vec()),
+        ..Pipes::default()
+    }));
     let (waker, _wake) = wake_pair().unwrap();
     let (tx, rx) = event_channel(waker);
     tx.send(BridgeEvent::Update(Box::new(
@@ -97,5 +103,35 @@ fn scripted_handshake_prompt_and_agent_frame() {
         output.contains("agent answer"),
         "agent message should be in a TSP frame"
     );
+    assert!(pipes.borrow().restored);
+}
+
+#[test]
+fn closed_agent_stays_visible_until_ctrl_d() {
+    let pipes = Rc::new(RefCell::new(Pipes {
+        first_input: Some(b"\x04".to_vec()),
+        ..Pipes::default()
+    }));
+    let (waker, _wake) = wake_pair().unwrap();
+    let (tx, events) = event_channel(waker);
+    drop(tx);
+    let (cmds, receiver) = tokio::sync::mpsc::unbounded_channel();
+    drop(receiver);
+    assert_eq!(
+        run_with_terminal(
+            Script(pipes.clone()),
+            UiOptions {
+                agent: "Claude".into(),
+                cwd: std::env::temp_dir(),
+            },
+            events,
+            cmds
+        )
+        .unwrap(),
+        UiExit::Quit
+    );
+    let output = String::from_utf8(pipes.borrow().output.clone()).unwrap();
+    assert!(output.contains("Agent connection closed"));
+    assert!(output.contains("Press Ctrl+D to quit"));
     assert!(pipes.borrow().restored);
 }
