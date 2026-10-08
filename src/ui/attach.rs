@@ -233,7 +233,9 @@ pub fn prompt(
         let can_image = mime_type.starts_with("image/") && caps.is_some_and(|c| c.image);
         let can_audio = mime_type.starts_with("audio/") && caps.is_some_and(|c| c.audio);
         if (can_image || can_audio) && metadata.len() <= MEDIA_LIMIT {
-            let bytes = fs::read(&path)?;
+            let Some(bytes) = read_at_most(&path, MEDIA_LIMIT)? else {
+                continue;
+            };
             if can_image {
                 blocks.push(ContentBlock::Image(
                     ImageContent::new(STANDARD.encode(bytes), mime_type).uri(uri),
@@ -249,7 +251,9 @@ pub fn prompt(
             && !mime_type.starts_with("image/")
             && !mime_type.starts_with("audio/")
         {
-            let bytes = fs::read(&path)?;
+            let Some(bytes) = read_at_most(&path, TEXT_LIMIT)? else {
+                continue;
+            };
             if let Ok(content) = String::from_utf8(bytes) {
                 blocks.push(ContentBlock::Resource(EmbeddedResource::new(
                     EmbeddedResourceResource::TextResourceContents(
@@ -260,4 +264,15 @@ pub fn prompt(
         }
     }
     Ok(blocks)
+}
+
+/// Reads `path` unless it is (or grew to be) larger than `limit`: the size checked
+/// earlier can be stale by the time the file is read.
+fn read_at_most(path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>> {
+    use io::Read as _;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= limit).then_some(bytes))
 }
