@@ -92,8 +92,9 @@ pub fn render(model: &Model) -> Node<Msg> {
                 .align(Align::Center)
                 .wrap(true)
                 .child(
-                    ui::text(window.label.clone())
+                    ui::text(short_label(&window.label))
                         .key("label")
+                        .title(window.label.clone())
                         .role("omp.usage.label"),
                 )
                 .child(
@@ -117,7 +118,7 @@ pub fn render(model: &Model) -> Node<Msg> {
             provider = provider.child(row);
         }
         if let Some(credits) = &report.credits {
-            provider = provider.child(ui::text(format!("Credits: {credits}")).key("credits"));
+            provider = provider.child(ui::text(credits_text(credits)).key("credits"));
         }
         if report.windows.is_empty() {
             provider = provider.child(
@@ -252,4 +253,53 @@ fn action(key: &str, label: &str, shortcut: &str, message: Msg) -> Node<Msg> {
         .child(ui::text(label))
         .child(ui::kbd([shortcut]))
         .into()
+}
+
+/// omp's limit column is narrow: "Weekly · all models" and "codex Weekly limit" both read
+/// "Weekly"; the full label stays in the tooltip.
+fn short_label(label: &str) -> String {
+    let label = label.strip_prefix("codex ").unwrap_or(label);
+    let label = label.replace(" · all models", "");
+    let label = label
+        .strip_suffix(" limit")
+        .unwrap_or(&label)
+        .trim()
+        .to_owned();
+    let mut chars = label.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// `62372.8576375000` → `62,373 credits`; anything unparsable is shown as reported.
+fn credits_text(raw: &str) -> String {
+    let Ok(value) = raw.trim().parse::<f64>() else {
+        return format!("Credits: {raw}");
+    };
+    let whole = value.round() as u64;
+    let digits = whole.to_string();
+    let mut grouped = String::new();
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    format!("{grouped} credits")
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    #[test]
+    fn limit_labels_and_credits_read_compactly() {
+        assert_eq!(short_label("codex Weekly limit"), "Weekly");
+        assert_eq!(short_label("5h limit"), "5h");
+        assert_eq!(short_label("Weekly · all models"), "Weekly");
+        assert_eq!(short_label("5-hour limit"), "5-hour");
+        assert_eq!(short_label("Weekly · Opus"), "Weekly · Opus");
+        assert_eq!(credits_text("62372.8576375000"), "62,373 credits");
+        assert_eq!(credits_text("unlimited"), "Credits: unlimited");
+    }
 }
