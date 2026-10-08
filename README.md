@@ -55,8 +55,11 @@ The slash picker offers `/new`, `/sessions`, `/resume`, `/close`, `/delete`,
 `/mode`, `/config`, `/logout`, `/restart`, and `/quit` when supported by the
 agent; `/fork` and `/providers` appear when their unstable capabilities are
 available. Agent commands are inserted into the composer and sent as ordinary
-prompt text on Enter. Session settings use a native preferences sheet; terminal
-login methods temporarily hand the pane back to the terminal, then reconnect.
+prompt text on Enter. Session settings use a native preferences sheet; the
+provider picker opens a provider's routing preferences, where saving replaces
+its entire headers map. Existing secret headers cannot be read back: enter the
+full replacement JSON map before saving. Terminal login methods temporarily
+hand the pane back to the terminal, then reconnect.
 
 ## Logs and environment
 

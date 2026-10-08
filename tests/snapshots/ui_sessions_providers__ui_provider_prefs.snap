@@ -1,0 +1,72 @@
+---
+source: tests/ui_sessions_providers.rs
+expression: "serde_json::to_value(doc.regions()[2].as_ref().unwrap().wire()).unwrap()"
+---
+{
+  "id": "layer",
+  "k": "prefs",
+  "p": {
+    "key": "provider",
+    "title": "Provider primary",
+    "sections": [
+      {
+        "id": "routing",
+        "title": "Routing",
+        "rows": [
+          {
+            "id": "api",
+            "label": "API protocol",
+            "control": {
+              "k": "choice",
+              "value": "openai",
+              "options": [
+                {
+                  "value": "openai",
+                  "label": "openai"
+                }
+              ],
+              "style": "menu"
+            }
+          },
+          {
+            "id": "url",
+            "label": "Base URL",
+            "control": {
+              "k": "text",
+              "value": "https://api.example.test",
+              "placeholder": "https://api.example.com"
+            }
+          },
+          {
+            "id": "headers",
+            "label": "Full headers JSON",
+            "hint": "Set the full replacement map; existing secret headers cannot be read back",
+            "control": {
+              "k": "text",
+              "value": "",
+              "placeholder": "{\"Authorization\":\"Bearer …\"}",
+              "secret": true
+            }
+          },
+          {
+            "id": "enabled",
+            "label": "Enabled",
+            "control": {
+              "k": "switch",
+              "on": true
+            }
+          },
+          {
+            "id": "apply",
+            "label": "Apply routing",
+            "control": {
+              "k": "action",
+              "act": "apply",
+              "label": "Save provider"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

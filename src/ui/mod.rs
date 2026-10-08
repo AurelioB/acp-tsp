@@ -5,6 +5,8 @@ pub mod composer;
 mod input;
 pub mod palette;
 pub mod prefs;
+#[cfg(feature = "unstable_llm_providers")]
+mod providers;
 pub mod view;
 
 use std::path::PathBuf;
@@ -58,6 +60,10 @@ pub enum Msg {
     AuthSelect(String),
     AuthActivate(String),
     ConfigChange(Option<String>, serde_json::Value),
+    #[cfg(feature = "unstable_llm_providers")]
+    ProviderChange(Option<String>, serde_json::Value),
+    #[cfg(feature = "unstable_llm_providers")]
+    ProviderApply,
 }
 
 /// Runs the UI on the current thread until the user quits.
@@ -237,6 +243,18 @@ fn run_with_controller(
                     Msg::ConfigChange(id, value) if config_open =>
                         prefs::change(&model, id.as_deref(), &value)
                             .map_or(Action::None, Action::Command),
+                    #[cfg(feature = "unstable_llm_providers")]
+                    Msg::ProviderChange(id, value) => {
+                        if let Some(editor) = palette.as_mut().and_then(|picker| picker.provider_editor.as_mut()) {
+                            editor.change(id.as_deref(), &value).map_or(Action::Changed, Action::Command)
+                        } else { Action::None }
+                    }
+                    #[cfg(feature = "unstable_llm_providers")]
+                    Msg::ProviderApply => {
+                        if let Some(editor) = palette.as_mut().and_then(|picker| picker.provider_editor.as_mut()) {
+                            editor.apply().map_or(Action::Changed, Action::Command)
+                        } else { Action::None }
+                    }
                     Msg::PickerSelect(_) | Msg::PickerActivate(_) | Msg::ConfigChange(_, _) => Action::None,
                 },
                 Input::Event(Event::Error(error)) => {
@@ -372,7 +390,10 @@ fn palette_choice(
             Action::Changed
         }
         Choice::Command(cmd) => {
-            if !matches!(cmd, UiCmd::ListSessions { .. } | UiCmd::DeleteSession(_)) {
+            let keep = matches!(cmd, UiCmd::ListSessions { .. } | UiCmd::DeleteSession(_));
+            #[cfg(feature = "unstable_llm_providers")]
+            let keep = keep || matches!(cmd, UiCmd::SetProvider(_) | UiCmd::DisableProvider(_));
+            if !keep {
                 *palette = None;
             }
             Action::Command(cmd)

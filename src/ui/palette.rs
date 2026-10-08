@@ -15,6 +15,8 @@ use crate::{
 };
 
 use super::Msg;
+#[cfg(feature = "unstable_llm_providers")]
+use super::providers::ProviderEditor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -30,6 +32,8 @@ pub struct Palette {
     pub query: String,
     pub selected: usize,
     pub confirm: Option<String>,
+    #[cfg(feature = "unstable_llm_providers")]
+    pub(super) provider_editor: Option<ProviderEditor>,
 }
 
 #[derive(Debug)]
@@ -57,6 +61,8 @@ impl Palette {
             query: String::new(),
             selected: 0,
             confirm: None,
+            #[cfg(feature = "unstable_llm_providers")]
+            provider_editor: None,
         }
     }
 
@@ -244,7 +250,11 @@ impl Palette {
         rows
     }
 
-    pub fn render(&self, model: &Model) -> impl Into<ui::Node<Msg>> {
+    pub fn render(&self, model: &Model) -> ui::Node<Msg> {
+        #[cfg(feature = "unstable_llm_providers")]
+        if let Some(editor) = &self.provider_editor {
+            return editor.render().into();
+        }
         let rows = self.rows(model);
         let selected = rows.get(self.selected).map(|row| row.id.clone());
         let mut picker = ui::picker()
@@ -275,10 +285,18 @@ impl Palette {
                 "Delete {id}? Press d again to confirm · Esc cancels"
             ));
         }
-        picker
+        picker.into()
     }
 
     pub fn key(&mut self, key: &Key, model: &Model) -> Choice {
+        #[cfg(feature = "unstable_llm_providers")]
+        if let Some(editor) = &mut self.provider_editor {
+            if key.is("escape") {
+                self.provider_editor = None;
+                return Choice::Changed;
+            }
+            return editor.key(key).map_or(Choice::Changed, Choice::Command);
+        }
         if key.is("escape") {
             if self.confirm.take().is_some() {
                 return Choice::Changed;
@@ -317,6 +335,10 @@ impl Palette {
     }
 
     pub fn select(&mut self, id: &str, model: &Model, activate: bool) -> Choice {
+        #[cfg(feature = "unstable_llm_providers")]
+        if self.provider_editor.is_some() {
+            return Choice::Changed;
+        }
         if let Some(i) = self.rows(model).iter().position(|row| row.id == id) {
             self.selected = i;
             if activate {
@@ -384,6 +406,20 @@ impl Palette {
                 config_id: id.to_owned().into(),
                 value: SessionConfigOptionValue::value_id(value.to_owned()),
             });
+        }
+        #[cfg(feature = "unstable_llm_providers")]
+        if let Some(index) = row
+            .id
+            .strip_prefix("provider:")
+            .and_then(|s| s.parse::<usize>().ok())
+            && let Some(provider) = model
+                .sessions
+                .providers
+                .as_ref()
+                .and_then(|list| list.providers.get(index))
+        {
+            self.provider_editor = Some(ProviderEditor::new(provider));
+            return Choice::Changed;
         }
         match row.id.as_str() {
             "client:new" => Choice::Command(UiCmd::NewSession),
