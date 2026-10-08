@@ -167,6 +167,7 @@ impl Model {
                 cwd,
                 modes,
                 config_options,
+                ..
             } => {
                 self.session = Some(ActiveSession {
                     id: session_id,
@@ -185,6 +186,7 @@ impl Model {
             }
             BridgeEvent::Resolved(id) => self.permissions.retain(|permission| permission.id != id),
             BridgeEvent::TurnEnded(result) => {
+                let result = result.map(|response| response.stop_reason);
                 if matches!(result, Ok(StopReason::Cancelled)) {
                     for entry in &mut self.transcript {
                         if entry.turn_id == self.active_turn_id
@@ -226,6 +228,7 @@ impl Model {
                 self.auth = None;
                 self.queued = 0;
             }
+            other => tracing::debug!(?other, "event not handled yet"),
         }
     }
 

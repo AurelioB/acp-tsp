@@ -1,3 +1,4 @@
+use acp_tsp::launch::SessionOptions;
 use std::time::{Duration, Instant};
 
 use acp_tsp::acp;
@@ -50,7 +51,12 @@ async fn agent_exit_dismisses_pending_permission() {
     let (wake, _) = wake_pair().unwrap();
     let (tx, rx) = event_channel(wake);
     let (cmd, commands) = mpsc::unbounded_channel();
-    let bridge = tokio::spawn(acp::run_with(client, root.path().into(), tx, commands));
+    let bridge = tokio::spawn(acp::run_with(
+        client,
+        SessionOptions::new(root.path().into()),
+        tx,
+        commands,
+    ));
     let agent = tokio::spawn(fake);
     let start = Instant::now();
     let mut permission = None;

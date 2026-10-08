@@ -1,3 +1,4 @@
+use acp_tsp::launch::SessionOptions;
 use std::time::{Duration, Instant};
 
 use acp_tsp::acp;
@@ -83,7 +84,12 @@ async fn remote_request_cancellation_resolves_dialog_with_request_cancelled() {
     let (wake, _) = wake_pair().unwrap();
     let (tx, rx) = event_channel(wake);
     let (cmd, commands) = mpsc::unbounded_channel();
-    let bridge = tokio::spawn(acp::run_with(client, root.path().into(), tx, commands));
+    let bridge = tokio::spawn(acp::run_with(
+        client,
+        SessionOptions::new(root.path().into()),
+        tx,
+        commands,
+    ));
     let agent = tokio::spawn(fake);
     until(&rx, |event| {
         matches!(event, BridgeEvent::SessionStarted { .. })
@@ -103,7 +109,7 @@ async fn remote_request_cancellation_resolves_dialog_with_request_cancelled() {
         Error::request_cancelled().code
     );
     let events = until(&rx, |event| {
-        matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)))
+        matches!(event, BridgeEvent::TurnEnded(Ok(response)) if response.stop_reason == StopReason::EndTurn)
     })
     .await;
     assert!(
@@ -167,7 +173,7 @@ async fn restart_dismisses_old_permission_and_stale_answer_cannot_affect_new_con
         let (cmd, commands) = mpsc::unbounded_channel();
         let bridge = tokio::spawn(acp::run_with(
             client,
-            root.path().into(),
+            SessionOptions::new(root.path().into()),
             tx.clone(),
             commands,
         ));
@@ -219,7 +225,7 @@ async fn restart_dismisses_old_permission_and_stale_answer_cannot_affect_new_con
                 RequestPermissionOutcome::Selected(_)
             ));
             until(&rx, |event| {
-                matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)))
+                matches!(event, BridgeEvent::TurnEnded(Ok(response)) if response.stop_reason == StopReason::EndTurn)
             })
             .await;
             cmd.send(UiCmd::Shutdown).unwrap();

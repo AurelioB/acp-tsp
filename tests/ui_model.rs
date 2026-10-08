@@ -4,8 +4,9 @@ use acp_tsp::{
 };
 use agent_client_protocol::schema::v1::{
     ContentBlock, ContentChunk, PermissionOption, PermissionOptionKind, Plan, PlanEntry,
-    PlanEntryPriority, PlanEntryStatus, RequestPermissionRequest, SessionUpdate, StopReason,
-    TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    PlanEntryPriority, PlanEntryStatus, PromptResponse, RequestPermissionRequest, SessionUpdate,
+    StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields,
 };
 
 fn update(model: &mut Model, value: SessionUpdate) {
@@ -77,7 +78,9 @@ fn local_prompt_suppresses_only_its_matching_echo_even_when_queued() {
     update(&mut model, echo("fir"));
     update(&mut model, echo("st"));
     assert_eq!(model.transcript.len(), 2);
-    model.apply(BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)));
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+        StopReason::EndTurn,
+    )))));
     assert_eq!(model.queued, 0);
     update(&mut model, echo("second"));
     assert_eq!(model.transcript.len(), 2);
@@ -168,7 +171,9 @@ fn plan_replaces_and_cancel_marks_only_unfinished_tools() {
             .count(),
         1
     );
-    model.apply(BridgeEvent::TurnEnded(Ok(StopReason::Cancelled)));
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+        StopReason::Cancelled,
+    )))));
     assert!(matches!(model.turn, Turn::Idle));
     assert!(matches!(
         &model.transcript[2].kind,
@@ -197,14 +202,18 @@ fn cancelling_queued_turn_does_not_relabel_prior_tools() {
             ToolCall::new("first-tool", "First").status(ToolCallStatus::InProgress),
         ),
     );
-    model.apply(BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)));
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+        StopReason::EndTurn,
+    )))));
     update(
         &mut model,
         SessionUpdate::ToolCall(
             ToolCall::new("second-tool", "Second").status(ToolCallStatus::InProgress),
         ),
     );
-    model.apply(BridgeEvent::TurnEnded(Ok(StopReason::Cancelled)));
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+        StopReason::Cancelled,
+    )))));
     assert!(matches!(
         &model.transcript[2].kind,
         EntryKind::Tool {

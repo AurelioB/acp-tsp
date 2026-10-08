@@ -18,9 +18,9 @@ use agent_client_protocol::{
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 use crate::bus::EventTx;
-use crate::event::{BridgeEvent, PendingId, UiCmd};
+use crate::event::{BridgeEvent, PendingId, SessionStartKind, UiCmd};
 use crate::host::fs::FileSystem;
-use crate::launch::AgentLaunch;
+use crate::launch::{AgentLaunch, SessionOptions};
 
 static NEXT_PERMISSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -75,7 +75,7 @@ impl Shared {
 /// terminates the SDK-owned process group (including wrapper descendants).
 pub async fn run(
     launch: AgentLaunch,
-    cwd: PathBuf,
+    options: SessionOptions,
     events: EventTx,
     mut cmds: UnboundedReceiver<UiCmd>,
 ) -> anyhow::Result<()> {
@@ -88,7 +88,7 @@ pub async fn run(
             agent =
                 agent.with_debug(|line, direction| tracing::trace!(?direction, line, "ACP wire"));
         }
-        let restart = drive(agent, cwd.clone(), events.clone(), &mut cmds).await?;
+        let restart = drive(agent, options.clone(), events.clone(), &mut cmds).await?;
         if !restart {
             return Ok(());
         }
@@ -99,21 +99,21 @@ pub async fn run(
 /// A one-shot transport cannot be respawned; `Restart` closes it and returns.
 pub async fn run_with(
     transport: impl ConnectTo<Client> + 'static,
-    cwd: PathBuf,
+    options: SessionOptions,
     events: EventTx,
     mut cmds: UnboundedReceiver<UiCmd>,
 ) -> anyhow::Result<()> {
-    let _ = drive(transport, cwd, events, &mut cmds).await?;
+    let _ = drive(transport, options, events, &mut cmds).await?;
     Ok(())
 }
 
 async fn drive(
     transport: impl ConnectTo<Client> + 'static,
-    cwd: PathBuf,
+    options: SessionOptions,
     events: EventTx,
     cmds: &mut UnboundedReceiver<UiCmd>,
 ) -> anyhow::Result<bool> {
-    let cwd = std::fs::canonicalize(cwd)?;
+    let cwd = std::fs::canonicalize(&options.cwd)?;
     let fs = FileSystem::new(vec![cwd.clone()])?;
     let shared = Arc::new(Shared::default());
     let updates = shared.clone();
@@ -262,7 +262,7 @@ async fn drive(
                     Ok(session) => {
                         *shared.session.lock().expect("session lock") = Some(session.session_id.clone());
                         events.send(BridgeEvent::SessionStarted {
-                            session_id: session.session_id.clone(), cwd: cwd.clone(),
+                            session_id: session.session_id.clone(), kind: SessionStartKind::New, cwd: cwd.clone(), additional_dirs: Vec::new(),
                             modes: session.modes, config_options: session.config_options,
                         });
                         break session.session_id;
@@ -291,6 +291,7 @@ async fn drive(
                                     Some(UiCmd::Prompt(_)) => { events.send(BridgeEvent::Error("Session is not ready".into())); }
                                     Some(UiCmd::Permission { id, .. }) => tracing::debug!(id, "ignoring unknown permission"),
                                     Some(UiCmd::Cancel) => {},
+                                    Some(other) => tracing::debug!(?other, "command unavailable while authenticating"),
                                 },
                                 _ = cx.incoming_closed() => return Ok(None),
                             }
@@ -331,10 +332,11 @@ async fn drive(
                         Some(UiCmd::Authenticate(_)) => { events.send(BridgeEvent::Error("Session is already authenticated".into())); }
                         Some(UiCmd::Restart) => return Ok(Some(true)),
                         Some(UiCmd::Shutdown) | None => return Ok(Some(false)),
+                        Some(other) => { events.send(BridgeEvent::Error(format!("Not supported yet: {other:?}"))); }
                     },
                     result = turn_rx.recv(), if running => {
                         if let Some(result) = result {
-                            events.send(BridgeEvent::TurnEnded(result.map(|r| r.stop_reason).map_err(|e| e.to_string())));
+                            events.send(BridgeEvent::TurnEnded(result.map(Box::new).map_err(|e| e.to_string())));
                             running = false;
                             shared.cancelling.store(false, Ordering::SeqCst);
                             if let Some(next) = queued.pop_front() {
@@ -397,6 +399,7 @@ async fn await_startup<T>(
                 Some(UiCmd::Permission { id, .. }) => tracing::debug!(id, "ignoring unknown permission"),
                 Some(UiCmd::Authenticate(_)) => { events.send(BridgeEvent::Error("Authentication is not requested".into())); }
                 Some(UiCmd::Cancel) => {},
+                Some(other) => tracing::debug!(?other, "command unavailable while starting"),
             }
         }
     }

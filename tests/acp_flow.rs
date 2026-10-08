@@ -1,3 +1,4 @@
+use acp_tsp::launch::SessionOptions;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -128,7 +129,7 @@ async fn streams_chunks_then_ends_turn_and_queues_second_prompt() {
     let (cmd, commands) = mpsc::unbounded_channel();
     let bridge = tokio::spawn(acp::run_with(
         client,
-        root.path().to_path_buf(),
+        SessionOptions::new(root.path().to_path_buf()),
         tx,
         commands,
     ));
@@ -153,12 +154,12 @@ async fn streams_chunks_then_ends_turn_and_queues_second_prompt() {
     assert_eq!(turns.load(Ordering::SeqCst), 1);
     release_tx.send(()).unwrap();
     let turns_ended = until(&rx, |event| {
-        matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)))
+        matches!(event, BridgeEvent::TurnEnded(Ok(response)) if response.stop_reason == StopReason::EndTurn)
     })
     .await;
     assert!(matches!(
-        turns_ended[0],
-        BridgeEvent::TurnEnded(Ok(StopReason::EndTurn))
+        &turns_ended[0],
+        BridgeEvent::TurnEnded(Ok(response)) if response.stop_reason == StopReason::EndTurn
     ));
     assert!(
         matches!(second_rx.recv().await.unwrap().as_slice(), [ContentBlock::Text(t)] if t.text == "second")
@@ -166,7 +167,7 @@ async fn streams_chunks_then_ends_turn_and_queues_second_prompt() {
     assert_eq!(turns.load(Ordering::SeqCst), 2);
     second_release_tx.send(()).unwrap();
     until(&rx, |event| {
-        matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)))
+        matches!(event, BridgeEvent::TurnEnded(Ok(response)) if response.stop_reason == StopReason::EndTurn)
     })
     .await;
     cmd.send(UiCmd::Shutdown).unwrap();
@@ -248,7 +249,7 @@ async fn permission_selection_and_cancel_resolve_pending_and_return_cancelled() 
     let (cmd, commands) = mpsc::unbounded_channel();
     let bridge = tokio::spawn(acp::run_with(
         client,
-        root.path().to_path_buf(),
+        SessionOptions::new(root.path().to_path_buf()),
         tx,
         commands,
     ));
@@ -271,7 +272,7 @@ async fn permission_selection_and_cancel_resolve_pending_and_return_cancelled() 
         matches!(selected_rx.recv().await.unwrap(), RequestPermissionOutcome::Selected(selected) if selected.option_id.0.as_ref() == "yes")
     );
     until(&rx, |event| {
-        matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)))
+        matches!(event, BridgeEvent::TurnEnded(Ok(response)) if response.stop_reason == StopReason::EndTurn)
     })
     .await;
     cmd.send(UiCmd::Prompt(text("cancel"))).unwrap();
@@ -299,7 +300,7 @@ async fn permission_selection_and_cancel_resolve_pending_and_return_cancelled() 
         "late permission after cancel must be answered cancelled"
     );
     let ended = until(&rx, |event| {
-        matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::Cancelled)))
+        matches!(event, BridgeEvent::TurnEnded(Ok(response)) if response.stop_reason == StopReason::Cancelled)
     })
     .await;
     assert!(
@@ -334,7 +335,7 @@ async fn permission_selection_and_cancel_resolve_pending_and_return_cancelled() 
         RequestPermissionOutcome::Selected(_)
     ));
     until(&rx, |event| {
-        matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)))
+        matches!(event, BridgeEvent::TurnEnded(Ok(response)) if response.stop_reason == StopReason::EndTurn)
     })
     .await;
     cmd.send(UiCmd::Shutdown).unwrap();
@@ -433,7 +434,7 @@ async fn authenticates_then_allows_confined_file_operations() {
     let (cmd, commands) = mpsc::unbounded_channel();
     let bridge = tokio::spawn(acp::run_with(
         client,
-        root.path().to_path_buf(),
+        SessionOptions::new(root.path().to_path_buf()),
         tx,
         commands,
     ));
@@ -452,7 +453,7 @@ async fn authenticates_then_allows_confined_file_operations() {
     .await;
     cmd.send(UiCmd::Prompt(text("files"))).unwrap();
     until(&rx, |event| {
-        matches!(event, BridgeEvent::TurnEnded(Ok(StopReason::EndTurn)))
+        matches!(event, BridgeEvent::TurnEnded(Ok(response)) if response.stop_reason == StopReason::EndTurn)
     })
     .await;
     cmd.send(UiCmd::Shutdown).unwrap();

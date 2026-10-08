@@ -125,9 +125,11 @@ fn prior_turn_thoughts_stay_collapsed_while_new_turn_streams() {
             "old answer",
         )))),
     );
-    model.apply(BridgeEvent::TurnEnded(Ok(
-        agent_client_protocol::schema::v1::StopReason::EndTurn,
-    )));
+    model.apply(BridgeEvent::TurnEnded(Ok(Box::new(
+        agent_client_protocol::schema::v1::PromptResponse::new(
+            agent_client_protocol::schema::v1::StopReason::EndTurn,
+        ),
+    ))));
     model.submitted("second".into());
     let document = wire(&model);
     assert_eq!(document["main"]["c"][1]["p"]["collapsed"], true);
@@ -139,9 +141,11 @@ fn many_entries_have_unique_wire_ids() {
     let mut model = Model::default();
     for i in 0..100 {
         model.submitted(format!("prompt {i}"));
-        model.apply(BridgeEvent::TurnEnded(Ok(
-            agent_client_protocol::schema::v1::StopReason::EndTurn,
-        )));
+        model.apply(BridgeEvent::TurnEnded(Ok(Box::new(
+            agent_client_protocol::schema::v1::PromptResponse::new(
+                agent_client_protocol::schema::v1::StopReason::EndTurn,
+            ),
+        ))));
         update(
             &mut model,
             SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(

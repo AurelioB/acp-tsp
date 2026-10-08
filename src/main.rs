@@ -12,7 +12,13 @@ use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
-use acp_tsp::{acp, bus, config::Config, event::UiCmd, launch::AgentLaunch, tern_settings, ui};
+use acp_tsp::{
+    acp, bus,
+    config::Config,
+    event::UiCmd,
+    launch::{AgentLaunch, SessionOptions},
+    tern_settings, ui,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -95,7 +101,12 @@ fn run_session(cli: Cli) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let acp_task = runtime.spawn(acp::run(launch.clone(), cwd.clone(), events_tx, cmd_rx));
+    let acp_task = runtime.spawn(acp::run(
+        launch.clone(),
+        SessionOptions::new(cwd.clone()),
+        events_tx,
+        cmd_rx,
+    ));
     let ui_result = ui::run(
         ui::UiOptions {
             agent: launch.name,
