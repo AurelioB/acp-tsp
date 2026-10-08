@@ -743,9 +743,17 @@ fn run_with_controller(
                 tracing::warn!(message = %error.msg, "TSP rejected operation");
                 Action::None
             }
-            Input::Event(Event::Gone(_)) => {
+            // Tern also reports settled transcript rows it evicted under its retention budget
+            // (`gone` with node ids); only the surface's own id means the session view is gone.
+            Input::Event(Event::Gone(gone))
+                if gone.ids.iter().any(|id| id == session.surface_id(sf)) =>
+            {
                 tracing::warn!("TSP surface gone");
                 Action::Quit
+            }
+            Input::Event(Event::Gone(gone)) => {
+                tracing::debug!(nodes = gone.ids.len(), "Tern evicted settled rows");
+                Action::None
             }
             Input::Event(event) => {
                 tracing::debug!(ev = event.name(), "unhandled TSP event");

@@ -252,3 +252,66 @@ fn resume_without_an_id_lists_sessions_and_closing_the_picker_starts_a_new_one()
     assert!(matches!(sent[1], UiCmd::NewSession), "{sent:?}");
     assert!(matches!(sent[2], UiCmd::Shutdown), "{sent:?}");
 }
+
+fn run_with_input(input: Vec<u8>) -> Vec<UiCmd> {
+    let pipes = Rc::new(RefCell::new(Pipes {
+        first_input: Some(input),
+        ..Pipes::default()
+    }));
+    let (waker, _wake) = wake_pair().unwrap();
+    let (_tx, rx) = event_channel(waker);
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    run_with_terminal(
+        Script(pipes),
+        UiOptions {
+            agent: "Codex".into(),
+            cwd: std::env::temp_dir(),
+            launch: AgentLaunch {
+                name: "Codex".into(),
+                command: "true".into(),
+                args: vec![],
+                env: Default::default(),
+            },
+        },
+        rx,
+        cmd_tx,
+        || {},
+    )
+    .unwrap();
+    let mut sent = Vec::new();
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        sent.push(cmd);
+    }
+    sent
+}
+
+fn gone(ids: &[&str]) -> Vec<u8> {
+    format!(
+        "\x1b_tsp;e;{}\x1b\\",
+        serde_json::json!({"ev": "gone", "sf": "s1", "ids": ids})
+    )
+    .into_bytes()
+}
+
+#[test]
+fn evicted_transcript_rows_do_not_end_the_session() {
+    // Tern drops old settled rows under its retention budget and says so with `gone`.
+    let mut input = gone(&["main.entry.1", "main.entry.2"]);
+    input.extend_from_slice(b"hi\r\x04");
+    let sent = run_with_input(input);
+    assert!(
+        sent.iter().any(|cmd| matches!(cmd, UiCmd::Prompt(_))),
+        "the session kept taking input: {sent:?}"
+    );
+}
+
+#[test]
+fn a_gone_surface_ends_the_session() {
+    let mut input = gone(&["s1"]);
+    input.extend_from_slice(b"hi\r");
+    let sent = run_with_input(input);
+    assert!(
+        !sent.iter().any(|cmd| matches!(cmd, UiCmd::Prompt(_))),
+        "{sent:?}"
+    );
+}
