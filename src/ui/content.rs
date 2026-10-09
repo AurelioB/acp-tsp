@@ -24,7 +24,11 @@ pub fn reset_uploads(model: &mut Model) {
 }
 
 /// Upload only images not previously sent; `Session::blob` deduplicates wire payloads too.
-pub fn upload(term: &mut Session<Msg>, model: &mut Model) -> anyhow::Result<()> {
+pub fn upload(
+    term: &mut Session<Msg>,
+    model: &mut Model,
+    composer: &mut super::composer::Composer,
+) -> anyhow::Result<()> {
     if !term
         .caps()
         .features
@@ -109,6 +113,11 @@ pub fn upload(term: &mut Session<Msg>, model: &mut Model) -> anyhow::Result<()> 
                 model.content.invalid_images.insert(key);
                 model.errors.push("Agent sent invalid image data".into());
             }
+        }
+    }
+    for image in &mut composer.images {
+        if image.blob.is_none() {
+            image.blob = Some(term.blob(image.bytes.clone(), Some(&image.mime_type))?);
         }
     }
     Ok(())

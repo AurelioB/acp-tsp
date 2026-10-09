@@ -9,33 +9,122 @@ use std::{cell::RefCell, io, rc::Rc, time::Duration};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use tern_sdk::term::Terminal;
 
+use super::paste::{self, PasteFilter, PastedImage};
 use crate::model::{Model, Turn, TurnOutcome};
 
-/// The session's terminal, shared so pane signals can be written between frames.
-pub struct SharedTerm(Rc<RefCell<Box<dyn Terminal>>>);
+/// Pastes taken out of the input for the UI: images and errors to show.
+#[derive(Default)]
+pub struct PasteInbox {
+    pub images: Vec<PastedImage>,
+    pub errors: Vec<String>,
+}
+
+struct Shared {
+    term: Box<dyn Terminal>,
+    paste: PasteFilter,
+    /// Filtered input that did not fit the caller's buffer.
+    spill: Vec<u8>,
+    inbox: Rc<RefCell<PasteInbox>>,
+    paste_enabled: bool,
+}
+
+/// The session's terminal, shared so pane signals can be written between frames. Its input
+/// passes through the enhanced-paste filter.
+pub struct SharedTerm(Rc<RefCell<Shared>>);
 
 impl SharedTerm {
-    pub fn new(term: impl Terminal + 'static) -> Self {
-        Self(Rc::new(RefCell::new(Box::new(term))))
+    pub fn new(term: impl Terminal + 'static, paste_limit: usize) -> Self {
+        Self(Rc::new(RefCell::new(Shared {
+            term: Box::new(term),
+            paste: PasteFilter::new(paste_limit),
+            spill: Vec::new(),
+            inbox: Rc::default(),
+            paste_enabled: false,
+        })))
     }
 
-    fn handle(&self) -> Self {
+    pub(super) fn handle(&self) -> Self {
         Self(self.0.clone())
+    }
+
+    pub fn paste_inbox(&self) -> Rc<RefCell<PasteInbox>> {
+        self.0.borrow().inbox.clone()
+    }
+
+    /// Asks Tern for enhanced paste (undone by `restore`).
+    pub fn enable_paste(&self) -> io::Result<()> {
+        let mut shared = self.0.borrow_mut();
+        shared.term.write(paste::ENABLE)?;
+        shared.paste_enabled = true;
+        Ok(())
+    }
+
+    /// Gives pastes back to whatever reads the pty next (the shell, while suspended).
+    pub fn disable_paste(&self) -> io::Result<()> {
+        let mut shared = self.0.borrow_mut();
+        if std::mem::take(&mut shared.paste_enabled) {
+            shared.term.write(paste::DISABLE)?;
+        }
+        Ok(())
     }
 }
 
 impl Terminal for SharedTerm {
     fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.0.borrow_mut().write(bytes)
+        self.0.borrow_mut().term.write(bytes)
     }
     fn read(&mut self, buf: &mut [u8], timeout: Option<Duration>) -> io::Result<Option<usize>> {
-        self.0.borrow_mut().read(buf, timeout)
+        let mut shared = self.0.borrow_mut();
+        loop {
+            if !shared.spill.is_empty() {
+                let n = buf.len().min(shared.spill.len());
+                buf[..n].copy_from_slice(&shared.spill[..n]);
+                shared.spill.drain(..n);
+                return Ok(Some(n));
+            }
+            // A possible packet start is held back; if nothing follows quickly it was a key.
+            const HOLD: Duration = Duration::from_millis(30);
+            let holding = shared.paste.holding();
+            let wait = if holding {
+                Some(timeout.map_or(HOLD, |timeout| timeout.min(HOLD)))
+            } else {
+                timeout
+            };
+            let Some(n) = shared.term.read(buf, wait)? else {
+                if holding {
+                    shared.spill = shared.paste.flush_held();
+                    continue;
+                }
+                return Ok(None);
+            };
+            if n == 0 {
+                return Ok(Some(0));
+            }
+            let filtered = shared.paste.feed(&buf[..n]);
+            for reply in &filtered.replies {
+                shared.term.write(reply)?;
+            }
+            let mut input = filtered.input;
+            if !filtered.images.is_empty() || !filtered.errors.is_empty() {
+                let mut inbox = shared.inbox.borrow_mut();
+                inbox.images.extend(filtered.images);
+                inbox.errors.extend(filtered.errors);
+                // Wake the session loop so the UI takes the paste now.
+                input.extend_from_slice(crate::bus::WAKE_EVENT);
+            }
+            shared.spill = input;
+            if shared.spill.is_empty() && timeout.is_some() && !shared.paste.holding() {
+                // Only packets arrived: to the caller this read timed out.
+                return Ok(None);
+            }
+        }
     }
     fn restore(&mut self) -> io::Result<()> {
-        self.0.borrow_mut().restore()
+        self.disable_paste()?;
+        self.0.borrow_mut().term.restore()
     }
     fn modes(&mut self, paste: bool, kitty: bool) {
-        self.0.borrow_mut().modes(paste, kitty);
+        self.0.borrow_mut().term.modes(paste, kitty);
     }
 }
 
@@ -51,7 +140,9 @@ pub enum Progress {
 pub struct PaneSignals {
     out: SharedTerm,
     title: Option<String>,
-    progress: Progress,
+    /// The last state written; `None` until the first sync. Tern treats a running command as
+    /// busy until it reports progress, so idle must be said explicitly too.
+    progress: Option<Progress>,
     dialog: Option<u64>,
     finished_turns: u64,
     exited: bool,
@@ -62,7 +153,7 @@ impl PaneSignals {
         Self {
             out: term.handle(),
             title: None,
-            progress: Progress::Clear,
+            progress: None,
             dialog: None,
             finished_turns: 0,
             exited: false,
@@ -84,10 +175,10 @@ impl PaneSignals {
             self.title = Some(title);
         }
         let progress = progress(model);
-        if progress != self.progress {
+        if Some(progress) != self.progress {
             self.out
                 .write(format!("\x1b]9;4;{};\x1b\\", progress as u8).as_bytes())?;
-            self.progress = progress;
+            self.progress = Some(progress);
         }
         let dialog = model.dialogs.front().copied();
         if dialog != self.dialog {
@@ -128,9 +219,12 @@ impl PaneSignals {
 
     /// Leaves no progress behind when the program quits.
     pub fn clear(&mut self) -> io::Result<()> {
-        if self.progress != Progress::Clear {
+        if self
+            .progress
+            .is_some_and(|progress| progress != Progress::Clear)
+        {
             self.out.write(b"\x1b]9;4;0;\x1b\\")?;
-            self.progress = Progress::Clear;
+            self.progress = Some(Progress::Clear);
         }
         Ok(())
     }
@@ -231,7 +325,7 @@ mod tests {
 
     fn signals() -> (PaneSignals, Rc<RefCell<Vec<u8>>>) {
         let bytes = Rc::new(RefCell::new(Vec::new()));
-        let term = SharedTerm::new(Capture(bytes.clone()));
+        let term = SharedTerm::new(Capture(bytes.clone()), 1024);
         (PaneSignals::new(&term), bytes)
     }
 
@@ -281,8 +375,8 @@ mod tests {
         signals.sync(&model).unwrap();
         assert_eq!(
             take(&bytes),
-            "\x1b]2;Codex\x1b\\",
-            "untitled: the agent names the pane"
+            "\x1b]2;Codex\x1b\\\x1b]9;4;0;\x1b\\",
+            "untitled: the agent names the pane; idle is reported, not left to Tern's \"a command runs\" default"
         );
 
         model.submitted("hi".into());

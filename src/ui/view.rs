@@ -13,7 +13,7 @@ use tern_sdk::{
 };
 
 use super::ext;
-use super::{Msg, auth, composer::Composer, prefs};
+use super::{Msg, auth, composer::Composer, palette, prefs};
 use crate::model::{EntryKind, Model, Turn, TurnSummary};
 
 /// The composer editor's node id (`dock` > `editor` > `line` > `ed`). Native edit events,
@@ -488,37 +488,54 @@ fn welcome(model: &Model) -> Node<Msg> {
                 model.status.clone()
             }
         });
+    let mut lockup = ui::row()
+        .key("lockup")
+        .role("omp.welcome.lockup")
+        .align(Align::Center)
+        .gap(Gap::Md);
+    // These marks are supplied by Tern itself, not bundled or downloaded by the adapter.
+    let icon = if model.launch_name.eq_ignore_ascii_case("codex") {
+        Some("app-codex")
+    } else if model.launch_name.eq_ignore_ascii_case("claude") {
+        Some("app-claude")
+    } else {
+        None
+    };
+    let mark: Node<Msg> = if let Some(icon) = icon {
+        ui::icon(icon)
+            .key("glyph")
+            .role("omp.welcome.logo")
+            .tone("accent")
+            .title(title)
+            .into()
+    } else {
+        ui::text("✦")
+            .key("glyph")
+            .role("omp.welcome.logo")
+            .tone("accent")
+            .title(title)
+            .into()
+    };
+    lockup = lockup.child(mark);
     ui::card()
         .key("welcome")
         .role("omp.welcome")
         .child(
-            ui::row()
-                .key("lockup")
-                .role("omp.welcome.lockup")
-                .align(Align::Center)
-                .gap(Gap::Md)
-                .child(
-                    ui::text("✦")
-                        .key("glyph")
-                        .role("omp.welcome.logo")
-                        .tone("accent")
-                        .title(title),
-                )
-                .child(
-                    ui::col()
-                        .key("mark")
-                        .role("omp.welcome.mark")
-                        .child(
-                            ui::text(ui::span(title).style("strong"))
-                                .key("wordmark")
-                                .role("omp.welcome.wordmark"),
-                        )
-                        .child(
-                            ui::text(ui::span(version).style("dim mono"))
-                                .key("version")
-                                .role("omp.welcome.version"),
-                        ),
-                ),
+            lockup.child(
+                ui::col()
+                    .key("mark")
+                    .role("omp.welcome.mark")
+                    .child(
+                        ui::text(ui::span(title).style("strong"))
+                            .key("wordmark")
+                            .role("omp.welcome.wordmark"),
+                    )
+                    .child(
+                        ui::text(ui::span(version).style("dim mono"))
+                            .key("version")
+                            .role("omp.welcome.version"),
+                    ),
+            ),
         )
         .child(
             ui::row()
@@ -728,6 +745,48 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
                     .on_focus(Msg::Focus),
             ),
     );
+    if !composer.images.is_empty() {
+        editor = editor.child(
+            ui::row()
+                .key("attachments")
+                .role("omp.composer.attachments")
+                .gap(Gap::Sm)
+                .children(composer.images.iter().enumerate().map(|(index, image)| {
+                    let label = image
+                        .path
+                        .as_ref()
+                        .and_then(|path| path.file_name())
+                        .map_or_else(
+                            || "Clipboard image".to_owned(),
+                            |name| name.to_string_lossy().into_owned(),
+                        );
+                    let thumbnail: Node<Msg> = if let Some(blob) = &image.blob {
+                        ui::image()
+                            .blob(blob.clone())
+                            .alt(label.clone())
+                            .w(26.0)
+                            .h(26.0)
+                            .key("icon")
+                            .into()
+                    } else {
+                        ui::icon("image").key("icon").into()
+                    };
+                    ui::row()
+                        .key(format!("image.{index}"))
+                        .role("omp.composer.attachment")
+                        .gap(Gap::Xs)
+                        .align(Align::Center)
+                        .child(thumbnail)
+                        .child(ui::text(label).key("name"))
+                        .child(
+                            ui::icon("x")
+                                .key("remove")
+                                .title("Remove image")
+                                .on_click(Msg::ImageRemove(index)),
+                        )
+                })),
+        );
+    }
     let model_label = prefs::chip(model, SessionConfigOptionCategory::Model)
         .and_then(|label| label.split_once(": ").map(|(_, value)| value.to_owned()))
         .unwrap_or_else(|| title.to_owned());
@@ -737,29 +796,35 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
         .gap(Gap::Xs)
         .align(Align::Center)
         .title("Switch model")
-        .on_click(Msg::ModelPicker)
-        .child(ui::icon("model").key("icon"))
-        .child(ui::text(ui::span(model_label).style("statusLineModel")).key("name"));
-    if let Some(level) = prefs::chip(model, SessionConfigOptionCategory::ThoughtLevel) {
-        let level = level
-            .split_once(": ")
-            .map_or(level.as_str(), |(_, value)| value);
-        model_chip = model_chip.child(
-            ui::node("effort")
-                .key("effort")
-                .role("omp.composer.model.effort")
-                .prop("level", level.to_lowercase())
-                .title(format!("Thinking effort: {level}"))
-                .on_click(Msg::EffortPicker),
-        );
+        .on_click(Msg::ModelPicker);
+    if palette::has_category(model, SessionConfigOptionCategory::ThoughtLevel) {
+        if let Some(level) = prefs::chip(model, SessionConfigOptionCategory::ThoughtLevel) {
+            let level = level
+                .split_once(": ")
+                .map_or(level.as_str(), |(_, value)| value);
+            model_chip = model_chip.child(
+                ui::node("effort")
+                    .key("effort")
+                    .role("omp.composer.model.effort")
+                    .prop("level", level.to_lowercase())
+                    .title(format!("Thinking effort: {level}"))
+                    .on_click(Msg::EffortPicker),
+            );
+        }
+    } else {
+        model_chip = model_chip.child(ui::icon("model").key("icon"));
     }
-    model_chip = model_chip.child(ui::icon("chev").key("chev"));
+    model_chip = model_chip
+        .child(ui::text(ui::span(model_label).style("statusLineModel")).key("name"))
+        .child(ui::icon("chev").key("chev"));
     let mut extras = ui::status()
         .key("extras")
         .role("omp.composer.extras")
         .transparent(true)
         .prop("grow", 1);
-    if let Some(mode) = prefs::chip(model, SessionConfigOptionCategory::Mode).or_else(|| {
+    let mode = if palette::has_category(model, SessionConfigOptionCategory::Mode) {
+        prefs::chip(model, SessionConfigOptionCategory::Mode)
+    } else {
         model
             .session
             .as_ref()
@@ -771,13 +836,16 @@ fn composer_dock(model: &Model, composer: &Composer) -> Node<Msg> {
                     .find(|item| item.id == modes.current_mode_id)
                     .map(|item| item.name.clone())
             })
-    }) {
+    };
+    if let Some(mode) = mode {
         extras = extras.child(
             ui::seg(mode)
                 .key("mode")
-                .role("omp.composer.fact")
+                .role("omp.composer.mode")
                 .priority(6.0)
-                .icon("mode"),
+                .icon("mode")
+                .title("Choose mode")
+                .on_click(Msg::ModePicker),
         );
     }
     for (id, label, _) in prefs::active_chips(model) {
@@ -1078,5 +1146,88 @@ mod tests {
         )
         .unwrap();
         assert!(details.contains("**5h limit:**"), "{details}");
+    }
+
+    #[test]
+    fn composer_controls_follow_confirmed_session_options() {
+        use agent_client_protocol::schema::v1::{
+            SessionConfigOption, SessionConfigSelectOption, SessionId,
+        };
+        fn find_role<'a>(node: &'a serde_json::Value, role: &str) -> Option<&'a serde_json::Value> {
+            if node["p"]["role"] == role {
+                return Some(node);
+            }
+            node["c"]
+                .as_array()?
+                .iter()
+                .find_map(|child| find_role(child, role))
+        }
+        let dock = |model: &Model| {
+            serde_json::to_value(
+                tern_sdk::reconcile::Doc::from_view(view(
+                    model,
+                    &Composer::default(),
+                    &Capabilities::default(),
+                ))
+                .unwrap()
+                .regions()[1]
+                    .as_ref()
+                    .unwrap()
+                    .wire(),
+            )
+            .unwrap()
+        };
+        let mut model = Model::default();
+        let idle = dock(&model);
+        assert!(find_role(&idle, "omp.composer.model.effort").is_none());
+        assert!(find_role(&idle, "omp.composer.mode").is_none());
+        let start = |model: &mut Model, id: &str, options| {
+            model.apply(crate::event::BridgeEvent::SessionStarted {
+                session_id: SessionId::new(id),
+                kind: crate::event::SessionStartKind::New,
+                cwd: std::path::PathBuf::from("/tmp"),
+                additional_dirs: vec![],
+                modes: None,
+                config_options: Some(options),
+            });
+        };
+        start(
+            &mut model,
+            "one",
+            vec![
+                SessionConfigOption::select(
+                    "reasoning_effort",
+                    "Reasoning effort",
+                    "medium",
+                    vec![
+                        SessionConfigSelectOption::new("low", "Low"),
+                        SessionConfigSelectOption::new("medium", "Medium"),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::ThoughtLevel),
+                SessionConfigOption::select(
+                    "mode",
+                    "Mode",
+                    "auto",
+                    vec![
+                        SessionConfigSelectOption::new("read-only", "Read-only"),
+                        SessionConfigSelectOption::new("auto", "Auto review"),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::Mode),
+            ],
+        );
+        let active = dock(&model);
+        assert_eq!(
+            find_role(&active, "omp.composer.model.effort").unwrap()["p"]["level"],
+            "medium"
+        );
+        let mode = find_role(&active, "omp.composer.mode").unwrap();
+        assert_eq!(mode["p"]["text"], "Mode: Auto review");
+        assert_eq!(mode["p"]["actions"]["click"], "click");
+        start(&mut model, "two", vec![]);
+        let switched = dock(&model);
+        assert!(find_role(&switched, "omp.composer.model.effort").is_none());
+        assert!(find_role(&switched, "omp.composer.mode").is_none());
     }
 }

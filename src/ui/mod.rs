@@ -9,6 +9,7 @@ mod ext;
 mod input;
 pub mod palette;
 mod pane;
+mod paste;
 pub mod permission;
 pub mod prefs;
 #[cfg(feature = "unstable_llm_providers")]
@@ -80,6 +81,8 @@ pub enum Msg {
     ConfigChip(String),
     ModelPicker,
     EffortPicker,
+    ModePicker,
+    ImageRemove(usize),
     Restart,
     Quit,
     Permission(u64, PermissionOptionId),
@@ -175,8 +178,10 @@ fn run_with_controller(
     on_connected: impl FnOnce(),
     stop: impl Fn() -> std::io::Result<()>,
 ) -> anyhow::Result<UiExit> {
-    let term = pane::SharedTerm::new(term);
+    let term = pane::SharedTerm::new(term, attach::MEDIA_LIMIT as usize);
     let mut signals = pane::PaneSignals::new(&term);
+    let pasting = term.handle();
+    let paste_inbox = term.paste_inbox();
     let Some(mut session) = Session::<Msg>::with_terminal(
         term,
         Options::new()
@@ -192,6 +197,7 @@ fn run_with_controller(
     };
     let mut sf = session.open(surface_options(&options))?;
     session.palette(sf, theme::palette())?;
+    pasting.enable_paste()?;
     on_connected();
     let mut model = Model::default();
     let mut usage_history = crate::usage_history::Recorder::new();
@@ -233,7 +239,7 @@ fn run_with_controller(
         palette = Some(Palette::new(Kind::Sessions));
         startup_picker = cmds.send(UiCmd::ListSessions { cursor: None }).is_ok();
     }
-    content::upload(&mut session, &mut model)?;
+    content::upload(&mut session, &mut model, &mut composer)?;
     session.render(
         sf,
         screen(
@@ -305,11 +311,13 @@ fn run_with_controller(
                     }
                     // Cooked mode lets the shell take control while acp-tsp is stopped; the
                     // adapter, in its own process group, keeps running (see `stop_job`).
+                    pasting.disable_paste()?;
                     let stopped = if let Some(controller) = controller.as_ref() {
                         controller.with_cooked(&stop)
                     } else {
                         stop()
                     };
+                    pasting.enable_paste()?;
                     if let Err(error) = stopped {
                         model.errors.push(format!("Could not suspend job: {error}"));
                     }
@@ -531,11 +539,22 @@ fn run_with_controller(
                     palette = Some(Palette::new(Kind::Model));
                     Action::Changed
                 }
-                Msg::EffortPicker if !composer_blocked => {
+                Msg::EffortPicker if !composer_blocked
+                    && palette::has_category(&model, agent_client_protocol::schema::v1::SessionConfigOptionCategory::ThoughtLevel) =>
+                {
                     palette = Some(Palette::new(Kind::Effort));
                     Action::Changed
                 }
-                Msg::ModelPicker | Msg::EffortPicker => Action::None,
+                Msg::ModePicker if !composer_blocked && model.next_mode().is_some() => {
+                    palette = Some(Palette::new(Kind::Mode));
+                    Action::Changed
+                }
+                Msg::ModelPicker | Msg::EffortPicker | Msg::ModePicker => Action::None,
+                Msg::ImageRemove(index) if !composer_blocked && index < composer.images.len() => {
+                    composer.images.remove(index);
+                    Action::Changed
+                }
+                Msg::ImageRemove(_) => Action::None,
                 Msg::Submit if !composer_blocked => {
                     if let Some(choice) = palette::typed_client_command(&composer.text, &model) {
                         composer = Composer::default();
@@ -577,7 +596,20 @@ fn run_with_controller(
                 Msg::Restart => Action::None,
                 Msg::Submit | Msg::Interrupt => Action::None,
                 Msg::Edit(edit) if !composer_blocked => {
-                    if composer.edit(&edit) {
+                    if edit.id == view::EDITOR_ID
+                        && edit.len == composer.text.encode_utf16().count()
+                        && edit.from <= edit.to
+                        && edit.to <= edit.len
+                        && input::paste_path(&edit.text, &mut model, &mut composer).is_some()
+                    {
+                        if edit.from != edit.to {
+                            let mut removal = edit.clone();
+                            removal.text.clear();
+                            removal.cursor = edit.from;
+                            composer.edit(&removal);
+                        }
+                        Action::Changed
+                    } else if composer.edit(&edit) {
                         focused_terminal = None;
                         if composer.text.starts_with('/')
                             && !composer.text.contains(char::is_whitespace)
@@ -992,14 +1024,19 @@ fn run_with_controller(
                     .as_ref()
                     .and_then(|auth| auth.methods.get(index))
                     .map(|method| {
-                        auth::terminal_auth(
+                        // The login program reads the pty meanwhile: plain pastes for it.
+                        pasting.disable_paste()?;
+                        let result = auth::terminal_auth(
                             &mut session,
                             sf,
                             method,
                             &options.launch,
                             controller.as_ref(),
-                        )
-                    });
+                        );
+                        pasting.enable_paste()?;
+                        Ok::<_, anyhow::Error>(result)
+                    })
+                    .transpose()?;
                 match outcome {
                     Some(Ok(true)) => {
                         model.auth = None;
@@ -1018,6 +1055,17 @@ fn run_with_controller(
             }
             Action::Quit => break,
             _ => {}
+        }
+        {
+            let mut inbox = paste_inbox.borrow_mut();
+            for error in inbox.errors.drain(..) {
+                model.errors.push(error);
+                changed = true;
+            }
+            for image in inbox.images.drain(..) {
+                input::paste_image(image, &mut model, &mut composer);
+                changed = true;
+            }
         }
         match events.drain() {
             Some(batch) => {
@@ -1113,7 +1161,7 @@ fn run_with_controller(
             changed = true;
         }
         if changed && session.is_open(sf) {
-            content::upload(&mut session, &mut model)?;
+            content::upload(&mut session, &mut model, &mut composer)?;
             session.render(
                 sf,
                 screen(

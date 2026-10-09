@@ -161,6 +161,7 @@ issue, not a general agy requirement.
 | ↑ ↓, Enter, Escape (picker) | choose, activate, or close the picker |
 | `r`, `d` (session picker) | resume; delete after pressing `d` again to confirm |
 | Shift+Tab | cycle mode (prefers the agent's mode config option) |
+| Click model's effort glyph or mode chip | choose an agent-advertised reasoning level or access/approval mode; no chip appears when unavailable |
 | `/usage` / click composer usage or context meter | open usage dashboard (Overview, Details, Refresh) |
 | r / Escape (usage dashboard) | refresh the adapter's local usage report / close |
 | PageUp / PageDown (transcript) | jump between user prompts; PageDown past the newest prompt returns to the last entry |
@@ -171,6 +172,8 @@ issue, not a general agy requirement.
 | Escape, Ctrl+C | cancel the running turn |
 | 1–9, Escape | answer the permission dialog (Escape rejects) |
 | @ | pick a workspace file; mentions attach file links, and supported text/images/audio |
+| Paste (Tern's paste shortcut) | an image on the clipboard attaches to the draft (PNG, JPEG, WebP or GIF); a pasted or dropped image file path / `file://` URL attaches too; other text pastes as text |
+| Alt+V (Ctrl+V when forwarded by Tern) | fallback: attach a PNG read from this machine's clipboard (only when acp-tsp runs on the desktop machine) |
 | Enter / Escape in an elicitation | accept validated form fields / cancel; URL requests offer Done and Cancel |
 | k while a terminal card is focused | kill its running process |
 | r | restart an agent that exited |
@@ -186,6 +189,12 @@ queue while a turn runs. Steering messages appear in the current turn's transcri
 File mentions stay inside the session workspace roots, including additional directories.
 Small text files are embedded only when the agent advertises embedded context;
 images and audio are sent only when their respective prompt capabilities are advertised.
+Image paste uses Tern's enhanced paste (kitty's OSC 5522 clipboard protocol, as omp does):
+Tern offers the clipboard's types and acp-tsp asks for the image, so it works when acp-tsp
+runs on another host too. Pasted images and image files (which may be outside workspace
+roots) are bounded to 5 MiB. The Alt+V fallback reads the local clipboard with `wl-paste`
+(Wayland), `xclip` (X11) or `swift` (macOS). An agent without image prompt support shows a
+notice instead of attaching the image.
 
 The slash picker separates agent commands from `acp-tsp` actions, with agent commands
 first; client actions are labeled `acp-tsp ·` so identical names (such as Claude's
@@ -217,6 +226,15 @@ Default mode only when its under-development `default_mode_request_user_input`
 feature is enabled in Codex's own config (`[features]` in `~/.codex/config.toml`).
 Checked with codex 0.159.3 (bundled with codex-acp 2.1.1) and 0.160.0, where it is off
 by default.
+The model chip's thinking-effort glyph opens the agent's `thought_level` choices (Codex's
+`reasoning_effort`; Claude's `effort` when supported by the current model). The mode
+chip opens the permission/access presets advertised in the `mode` config option,
+falling back to legacy ACP session modes. These controls show confirmed session
+values, not speculative local changes; changing effort never changes permissions.
+Codex's Plan collaboration setting is separate from its access/approval mode.
+Tern supplies the Claude and Codex brand icons shown in the welcome card. TSP
+surface metadata provides a title and role but not a program-set pane/tab icon;
+there is no bundled Gemini icon, so agy retains a generic welcome glyph.
 `/goal` opens a goal-control form only when the agent advertises `_session/goal`
 (some adapters expose it only to AIR clients).
 The dock account chip opens account details on click; the account e-mail is hidden

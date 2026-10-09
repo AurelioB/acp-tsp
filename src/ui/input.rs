@@ -1,17 +1,134 @@
 //! Key routing with dialog priority and double-Ctrl+C quit behavior.
 
-use std::time::{Duration, Instant};
+use std::{
+    io::{self, Read as _},
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
 
 use agent_client_protocol::schema::v1::{
     AuthMethod, PermissionOptionId, RequestPermissionOutcome, SelectedPermissionOutcome,
 };
 use tern_sdk::keys::Key;
 
-use super::composer::Composer;
+use super::{
+    attach::{self, ImageAttachment, MEDIA_LIMIT},
+    composer::Composer,
+};
 use crate::{
     event::UiCmd,
     model::{Model, Turn},
 };
+
+/// Injectable clipboard access keeps key-routing tests independent of the host desktop.
+pub trait Clipboard {
+    fn image_png(&self) -> io::Result<Option<Vec<u8>>>;
+}
+
+pub struct SystemClipboard;
+
+impl Clipboard for SystemClipboard {
+    fn image_png(&self) -> io::Result<Option<Vec<u8>>> {
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let x11 = std::env::var_os("DISPLAY").is_some();
+        let commands: [Option<(&str, &[&str])>; 3] = [
+            wayland.then_some(("wl-paste", &["--type", "image/png"])),
+            x11.then_some(("xclip", &["-selection", "clipboard", "-t", "image/png", "-o"])),
+            (cfg!(target_os = "macos") && !wayland && !x11).then_some(("swift", &["-e", "import AppKit; import Foundation; let board = NSPasteboard.general; if let image = board.data(forType: .png) ?? board.data(forType: .tiff).flatMap({ NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) }) { FileHandle.standardOutput.write(image) }"])),
+        ];
+        for (program, args) in commands.into_iter().flatten() {
+            let Ok(mut child) = Command::new(program)
+                .args(args)
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .stdout(Stdio::piped())
+                .spawn()
+            else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            let read = child
+                .stdout
+                .take()
+                .expect("piped clipboard stdout")
+                .take(MEDIA_LIMIT + 1)
+                .read_to_end(&mut bytes);
+            if bytes.len() as u64 > MEDIA_LIMIT {
+                let _ = child.kill();
+            }
+            let status = child.wait()?;
+            read?;
+            if bytes.len() as u64 > MEDIA_LIMIT {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "clipboard image exceeds 5 MiB limit",
+                ));
+            }
+            if status.success() && !bytes.is_empty() {
+                return Ok(Some(bytes));
+            }
+        }
+        Ok(None)
+    }
+}
+
+pub fn paste_path(text: &str, model: &mut Model, composer: &mut Composer) -> Option<Action> {
+    let path = attach::pasted_image_path(text)?;
+    if !model.prompt_capabilities.image {
+        model
+            .errors
+            .push("This agent does not accept images".into());
+        return None;
+    }
+    match ImageAttachment::from_path(&path) {
+        Ok(image) => {
+            composer.images.push(image);
+            Some(Action::Changed)
+        }
+        Err(error) => {
+            model.errors.push(format!("Cannot paste image: {error}"));
+            None
+        }
+    }
+}
+
+/// An image pasted in the window (enhanced paste) joins the draft.
+pub fn paste_image(image: super::paste::PastedImage, model: &mut Model, composer: &mut Composer) {
+    if !model.prompt_capabilities.image {
+        model
+            .errors
+            .push("This agent does not accept images".into());
+        return;
+    }
+    match ImageAttachment::from_clipboard(image.mime_type, image.bytes) {
+        Ok(image) => composer.images.push(image),
+        Err(error) => model.errors.push(format!("Cannot paste image: {error}")),
+    }
+}
+
+fn paste_clipboard(
+    model: &mut Model,
+    composer: &mut Composer,
+    clipboard: &impl Clipboard,
+) -> Action {
+    if !model.prompt_capabilities.image {
+        model
+            .errors
+            .push("This agent does not accept images".into());
+        return Action::Changed;
+    }
+    match clipboard.image_png() {
+        Ok(Some(bytes)) => match ImageAttachment::from_clipboard("image/png".into(), bytes) {
+            Ok(image) => composer.images.push(image),
+            Err(error) => model.errors.push(format!("Cannot paste image: {error}")),
+        },
+        Ok(None) => model.errors.push("No PNG image in system clipboard".into()),
+        Err(error) => model
+            .errors
+            .push(format!("Cannot read clipboard image: {error}")),
+    }
+    Action::Changed
+}
 
 pub enum Action {
     None,
@@ -30,7 +147,17 @@ pub struct InputState {
 
 impl InputState {
     pub fn key(&mut self, key: &Key, model: &mut Model, composer: &mut Composer) -> Action {
-        if key.is("ctrl+d") && composer.text.is_empty() {
+        self.key_with_clipboard(key, model, composer, &SystemClipboard)
+    }
+
+    fn key_with_clipboard(
+        &mut self,
+        key: &Key,
+        model: &mut Model,
+        composer: &mut Composer,
+        clipboard: &impl Clipboard,
+    ) -> Action {
+        if key.is("ctrl+d") && composer.text.is_empty() && composer.images.is_empty() {
             return Action::Quit;
         }
         if key.is("ctrl+c") {
@@ -38,7 +165,7 @@ impl InputState {
                 model.cancel();
                 return Action::Command(UiCmd::Cancel);
             }
-            if composer.text.is_empty() {
+            if composer.text.is_empty() && composer.images.is_empty() {
                 let now = Instant::now();
                 let quit = self
                     .last_interrupt
@@ -100,11 +227,23 @@ impl InputState {
             }
             return Action::None;
         }
+        if key.is("alt+v") || key.is("ctrl+v") {
+            return paste_clipboard(model, composer, clipboard);
+        }
         match key.name.as_str() {
             "enter" if !key.shift && !key.alt => return submit(model, composer),
             "enter" if key.alt && !key.shift => return submit_queued(model, composer),
             "enter" => composer.insert("\n"),
-            "paste" => composer.insert(key.text.as_deref().unwrap_or_default()),
+            "paste" => {
+                let text = key.text.as_deref().unwrap_or_default();
+                if text.is_empty() {
+                    return paste_clipboard(model, composer, clipboard);
+                }
+                if let Some(action) = paste_path(text, model, composer) {
+                    return action;
+                }
+                composer.insert(text);
+            }
             "backspace" => composer.backspace(),
             "delete" => composer.delete(),
             "left" => composer.cursor = composer.cursor.saturating_sub(1),
@@ -160,7 +299,7 @@ pub fn submit_queued(model: &mut Model, composer: &mut Composer) -> Action {
 }
 
 fn submit_with_queue(model: &mut Model, composer: &mut Composer, queue: bool) -> Action {
-    if composer.text.trim().is_empty() {
+    if composer.text.trim().is_empty() && composer.images.is_empty() {
         return Action::None;
     }
     if composer.text.trim() == "/usage" {
@@ -188,6 +327,12 @@ fn submit_with_queue(model: &mut Model, composer: &mut Composer, queue: bool) ->
     let Some(text) = composer.take() else {
         return Action::None;
     };
+    let mut prompt = prompt;
+    prompt.extend(
+        std::mem::take(&mut composer.images)
+            .into_iter()
+            .map(ImageAttachment::into_block),
+    );
     let steer = !queue && model.ext.steering && matches!(model.turn, Turn::Running { .. });
     if steer {
         model.steered(text, prompt.clone());
@@ -217,7 +362,139 @@ fn submit_with_queue(model: &mut Model, composer: &mut Composer, queue: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use tern_sdk::keys::Decoder;
+
+    struct FakeClipboard(Option<Vec<u8>>);
+
+    impl Clipboard for FakeClipboard {
+        fn image_png(&self) -> io::Result<Option<Vec<u8>>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn pasted_path_and_file_uri_submit_image_when_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("photo space.png");
+        std::fs::write(&image, b"png payload").unwrap();
+        let mut model = Model::default();
+        model.prompt_capabilities.image = true;
+        let mut composer = Composer::default();
+        let mut input = InputState::default();
+        for pasted in [
+            image.to_string_lossy().into_owned(),
+            format!("file://{}", image.to_string_lossy().replace(' ', "%20")),
+        ] {
+            let key = Key {
+                text: Some(pasted),
+                ..Key::named("paste")
+            };
+            assert!(matches!(
+                input.key(&key, &mut model, &mut composer),
+                Action::Changed
+            ));
+            assert!(composer.text.is_empty());
+            assert_eq!(composer.images.len(), 1);
+            let Action::Command(UiCmd::Prompt(blocks)) = submit(&mut model, &mut composer) else {
+                panic!("image-only prompt");
+            };
+            assert!(blocks.iter().any(|block| matches!(block, agent_client_protocol::schema::v1::ContentBlock::Image(image) if image.mime_type == "image/png" && image.data == base64::engine::general_purpose::STANDARD.encode(b"png payload"))));
+            assert!(composer.images.is_empty());
+        }
+    }
+
+    #[test]
+    fn unsupported_agent_gets_notice_and_retains_pasted_path_as_text() {
+        let mut model = Model::default();
+        let mut composer = Composer::default();
+        let path = "/tmp/image.png";
+        let key = Key {
+            text: Some(path.into()),
+            ..Key::named("paste")
+        };
+        let mut input = InputState::default();
+        assert!(matches!(
+            input.key(&key, &mut model, &mut composer),
+            Action::Changed
+        ));
+        assert_eq!(composer.text, path);
+        assert!(composer.images.is_empty());
+        assert!(
+            model
+                .errors
+                .iter()
+                .any(|error| error.contains("does not accept images"))
+        );
+    }
+    #[test]
+    fn oversized_pasted_image_is_not_attached_and_shows_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("huge.png");
+        std::fs::File::create(&image)
+            .unwrap()
+            .set_len(MEDIA_LIMIT + 1)
+            .unwrap();
+        let mut model = Model::default();
+        model.prompt_capabilities.image = true;
+        let mut composer = Composer::default();
+        let key = Key {
+            text: Some(image.to_string_lossy().into_owned()),
+            ..Key::named("paste")
+        };
+        assert!(matches!(
+            InputState::default().key(&key, &mut model, &mut composer),
+            Action::Changed
+        ));
+        assert!(composer.images.is_empty());
+        assert!(
+            model
+                .errors
+                .iter()
+                .any(|error| error.contains("5 MiB limit"))
+        );
+    }
+
+    #[test]
+    fn clipboard_image_uses_injected_reader_and_obeys_agent_capability() {
+        let mut model = Model::default();
+        let mut composer = Composer::default();
+        let key = Key {
+            alt: true,
+            ..Key::named("v")
+        };
+        let mut input = InputState::default();
+        let reader = FakeClipboard(Some(b"png payload".to_vec()));
+        assert!(matches!(
+            input.key_with_clipboard(&key, &mut model, &mut composer, &reader),
+            Action::Changed
+        ));
+        assert!(composer.images.is_empty());
+        assert!(
+            model
+                .errors
+                .iter()
+                .any(|error| error.contains("does not accept images"))
+        );
+        model.prompt_capabilities.image = true;
+        assert!(matches!(
+            input.key_with_clipboard(&key, &mut model, &mut composer, &reader),
+            Action::Changed
+        ));
+        assert_eq!(composer.images.len(), 1);
+        assert!(
+            matches!(submit(&mut model, &mut composer), Action::Command(UiCmd::Prompt(blocks)) if blocks.iter().any(|block| matches!(block, agent_client_protocol::schema::v1::ContentBlock::Image(_))))
+        );
+        let empty_paste = Key {
+            text: Some(String::new()),
+            ..Key::named("paste")
+        };
+        assert!(matches!(
+            input.key_with_clipboard(&empty_paste, &mut model, &mut composer, &reader),
+            Action::Changed
+        ));
+        assert_eq!(composer.images.len(), 1);
+    }
 
     #[test]
     fn ctrl_d_exits_after_submit() {

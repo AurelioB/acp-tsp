@@ -87,11 +87,47 @@ impl Palette {
         Self {
             kind,
             query: String::new(),
-            selected: 0,
+            selected: if matches!(kind, Kind::Mode | Kind::Model | Kind::Effort) {
+                usize::MAX
+            } else {
+                0
+            },
             confirm: None,
             #[cfg(feature = "unstable_llm_providers")]
             provider_editor: None,
         }
+    }
+
+    /// Until the user moves the selection, highlight the agent's confirmed value.
+    fn selected_index(&self, model: &Model, rows: &[Row]) -> usize {
+        if self.selected != usize::MAX {
+            return self.selected;
+        }
+        let Some(session) = model.session.as_ref() else {
+            return 0;
+        };
+        let category = match self.kind {
+            Kind::Mode => SessionConfigOptionCategory::Mode,
+            Kind::Model => SessionConfigOptionCategory::Model,
+            Kind::Effort => SessionConfigOptionCategory::ThoughtLevel,
+            _ => return 0,
+        };
+        if let Some(option) = session.config_options.as_ref().and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.category.as_ref() == Some(&category))
+        }) {
+            if let SessionConfigKind::Select(select) = &option.kind {
+                let id = format!("config:{}:{}", option.id, select.current_value);
+                return rows.iter().position(|row| row.id == id).unwrap_or(0);
+            }
+        } else if self.kind == Kind::Mode
+            && let Some(modes) = &session.modes
+        {
+            let id = format!("mode:{}", modes.current_mode_id);
+            return rows.iter().position(|row| row.id == id).unwrap_or(0);
+        }
+        0
     }
 
     fn rows(&self, model: &Model) -> Vec<Row> {
@@ -329,7 +365,7 @@ impl Palette {
             let list = ui::list()
                 .key("list")
                 .selected(
-                    rows.get(self.selected)
+                    rows.get(self.selected_index(model, &rows))
                         .map(|row| format!("layer.complete.0.list.{}", row.id))
                         .unwrap_or_default(),
                 )
@@ -359,7 +395,9 @@ impl Palette {
                 .child(ui::col().role("omp.select").child(list))
                 .into();
         }
-        let selected = rows.get(self.selected).map(|row| row.id.clone());
+        let selected = rows
+            .get(self.selected_index(model, &rows))
+            .map(|row| row.id.clone());
         let (title, icon, noun) = match self.kind {
             Kind::Sessions => ("Sessions", "history", "sessions"),
             Kind::Mode => ("Mode", "settings", "modes"),
@@ -416,7 +454,7 @@ impl Palette {
                 "Delete {id}? Press d again to confirm · Esc cancels"
             ));
         }
-        let preview = rows.get(self.selected).map(|row| {
+        let preview = rows.get(self.selected_index(model, &rows)).map(|row| {
             ui::col()
                 .child(ui::text(row.label.clone()).role("omp.ask.question"))
                 .child(ui::md(row.detail.clone()))
@@ -442,13 +480,14 @@ impl Palette {
             }
             return Choice::Close;
         }
-        let count = self.rows(model).len();
-        if key.is("up") {
-            self.selected = self.selected.saturating_sub(1);
-            return Choice::Changed;
-        }
-        if key.is("down") {
-            self.selected = (self.selected + 1).min(count.saturating_sub(1));
+        if key.is("up") || key.is("down") {
+            let rows = self.rows(model);
+            let current = self.selected_index(model, &rows);
+            self.selected = if key.is("up") {
+                current.saturating_sub(1)
+            } else {
+                (current + 1).min(rows.len().saturating_sub(1))
+            };
             return Choice::Changed;
         }
         if key.is("enter") || (self.kind == Kind::Commands && key.is("tab")) {
@@ -515,7 +554,8 @@ impl Palette {
     }
 
     pub fn activate(&mut self, model: &Model, resume: bool) -> Choice {
-        let Some(row) = self.rows(model).get(self.selected).cloned() else {
+        let rows = self.rows(model);
+        let Some(row) = rows.get(self.selected_index(model, &rows)).cloned() else {
             return Choice::Changed;
         };
         if row.id == "agent:usage" || row.id == "client:usage" {
@@ -598,15 +638,20 @@ impl Palette {
     }
 }
 
-fn has_category(model: &Model, category: SessionConfigOptionCategory) -> bool {
+pub(super) fn has_category(model: &Model, category: SessionConfigOptionCategory) -> bool {
     model
         .session
         .as_ref()
         .and_then(|session| session.config_options.as_ref())
         .is_some_and(|options| {
-            options
-                .iter()
-                .any(|option| option.category.as_ref() == Some(&category))
+            options.iter().any(|option| {
+                option.category.as_ref() == Some(&category)
+                    && matches!(&option.kind, SessionConfigKind::Select(select) if match &select.options {
+                        SessionConfigSelectOptions::Ungrouped(items) => !items.is_empty(),
+                        SessionConfigSelectOptions::Grouped(groups) => groups.iter().any(|group| !group.options.is_empty()),
+                        _ => false,
+                    })
+            })
         })
 }
 
@@ -665,5 +710,201 @@ fn relative_time(date: &str) -> String {
         format!("{}mo ago", days / 30)
     } else {
         format!("{}y ago", days / 365)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{BridgeEvent, SessionStartKind};
+    use agent_client_protocol::schema::v1::{
+        SessionConfigOption, SessionConfigSelectOption, SessionMode, SessionModeState,
+    };
+
+    fn session(
+        config_options: Option<Vec<SessionConfigOption>>,
+        modes: Option<SessionModeState>,
+    ) -> Model {
+        let mut model = Model::default();
+        model.apply(BridgeEvent::SessionStarted {
+            session_id: SessionId::new("one"),
+            kind: SessionStartKind::New,
+            cwd: std::path::PathBuf::from("/tmp"),
+            additional_dirs: vec![],
+            modes,
+            config_options,
+        });
+        model
+    }
+
+    fn rendered_selection(picker: &Palette, model: &Model) -> String {
+        let doc = tern_sdk::reconcile::Doc::from_view(
+            ui::View::<Msg>::new().layer(super::super::view::layer(picker.render(model))),
+        )
+        .unwrap();
+        let layer = serde_json::to_value(doc.regions()[2].as_ref().unwrap().wire()).unwrap();
+        fn selected(node: &serde_json::Value) -> Option<&str> {
+            node["p"]["selected"]
+                .as_str()
+                .or_else(|| node["c"].as_array()?.iter().find_map(selected))
+        }
+        selected(&layer).unwrap().to_owned()
+    }
+
+    #[test]
+    fn thought_level_picker_highlights_current_and_sends_only_effort_change() {
+        let option = SessionConfigOption::select(
+            "reasoning_effort",
+            "Reasoning effort",
+            "medium",
+            vec![
+                SessionConfigSelectOption::new("low", "Low"),
+                SessionConfigSelectOption::new("medium", "Medium"),
+                SessionConfigSelectOption::new("high", "High"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::ThoughtLevel);
+        let mut model = session(Some(vec![option]), None);
+        let mut picker = Palette::new(Kind::Effort);
+        let rows = picker.rows(&model);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Low", "Medium", "High"]
+        );
+        assert_eq!(rows[picker.selected_index(&model, &rows)].label, "Medium");
+        assert_eq!(
+            rendered_selection(&picker, &model),
+            "config:reasoning_effort:medium"
+        );
+        assert!(matches!(
+            picker.select("config:reasoning_effort:high", &model, true),
+            Choice::Command(UiCmd::SetConfigOption { config_id, value })
+            if config_id.0.as_ref() == "reasoning_effort" && value == SessionConfigOptionValue::value_id("high")
+        ));
+        // A choice does not change the displayed state until the agent confirms it.
+        assert_eq!(
+            super::super::prefs::chip(&model, SessionConfigOptionCategory::ThoughtLevel).as_deref(),
+            Some("Reasoning effort: Medium")
+        );
+        model.apply(BridgeEvent::Error("Change rejected".into()));
+        assert_eq!(
+            super::super::prefs::chip(&model, SessionConfigOptionCategory::ThoughtLevel).as_deref(),
+            Some("Reasoning effort: Medium")
+        );
+        assert!(
+            model
+                .errors
+                .iter()
+                .any(|message| message.contains("Change rejected"))
+        );
+        model.apply(BridgeEvent::Update(Box::new(
+            agent_client_protocol::schema::v1::SessionUpdate::ConfigOptionUpdate(
+                agent_client_protocol::schema::v1::ConfigOptionUpdate::new(vec![
+                    SessionConfigOption::select(
+                        "reasoning_effort",
+                        "Reasoning effort",
+                        "high",
+                        vec![
+                            SessionConfigSelectOption::new("low", "Low"),
+                            SessionConfigSelectOption::new("medium", "Medium"),
+                            SessionConfigSelectOption::new("high", "High"),
+                        ],
+                    )
+                    .category(SessionConfigOptionCategory::ThoughtLevel),
+                ]),
+            ),
+        )));
+        assert_eq!(
+            super::super::prefs::chip(&model, SessionConfigOptionCategory::ThoughtLevel).as_deref(),
+            Some("Reasoning effort: High")
+        );
+        assert_eq!(
+            rendered_selection(&Palette::new(Kind::Effort), &model),
+            "config:reasoning_effort:high"
+        );
+    }
+
+    #[test]
+    fn mode_picker_prefers_access_config_not_collaboration_and_legacy_falls_back() {
+        let modes = SessionModeState::new(
+            "manual",
+            vec![
+                SessionMode::new("manual", "Manual"),
+                SessionMode::new("auto", "Auto"),
+            ],
+        );
+        let config = vec![
+            SessionConfigOption::select(
+                "collaboration_mode",
+                "Collaboration mode",
+                "plan",
+                vec![
+                    SessionConfigSelectOption::new("default", "Default"),
+                    SessionConfigSelectOption::new("plan", "Plan"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Other(
+                "collaboration_mode".into(),
+            )),
+            SessionConfigOption::select(
+                "mode",
+                "Mode",
+                "agent",
+                vec![
+                    SessionConfigSelectOption::new("read-only", "Read-only"),
+                    SessionConfigSelectOption::new("workspace-write", "Workspace access"),
+                    SessionConfigSelectOption::new("agent", "Auto review"),
+                    SessionConfigSelectOption::new("agent-full-access", "Full access"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Mode),
+        ];
+        let model = session(Some(config), Some(modes.clone()));
+        let mut picker = Palette::new(Kind::Mode);
+        let rows = picker.rows(&model);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Read-only",
+                "Workspace access",
+                "Auto review",
+                "Full access"
+            ]
+        );
+        assert_eq!(
+            rows[picker.selected_index(&model, &rows)].label,
+            "Auto review"
+        );
+        assert_eq!(rendered_selection(&picker, &model), "config:mode:agent");
+        assert!(matches!(
+            picker.select("config:mode:workspace-write", &model, true),
+            Choice::Command(UiCmd::SetConfigOption { config_id, value })
+            if config_id.0.as_ref() == "mode" && value == SessionConfigOptionValue::value_id("workspace-write")
+        ));
+        let model = session(None, Some(modes));
+        let mut picker = Palette::new(Kind::Mode);
+        let rows = picker.rows(&model);
+        assert_eq!(rows[picker.selected_index(&model, &rows)].label, "Manual");
+        assert!(
+            matches!(picker.select("mode:auto", &model, true), Choice::Command(UiCmd::SetMode(id)) if id.0.as_ref() == "auto")
+        );
+        assert!(!has_category(
+            &session(None, None),
+            SessionConfigOptionCategory::ThoughtLevel
+        ));
+        assert!(
+            Palette::new(Kind::Effort)
+                .rows(&session(None, None))
+                .is_empty()
+        );
+        assert!(
+            Palette::new(Kind::Mode)
+                .rows(&session(None, None))
+                .is_empty()
+        );
     }
 }

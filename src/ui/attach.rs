@@ -15,7 +15,59 @@ use tern_sdk::ui::{self, Anchor, Node};
 const MAX_ENTRIES: usize = 4000;
 const MAX_DEPTH: usize = 6;
 const TEXT_LIMIT: u64 = 256 * 1024;
-const MEDIA_LIMIT: u64 = 5 * 1024 * 1024;
+pub(super) const MEDIA_LIMIT: u64 = 5 * 1024 * 1024;
+
+/// A draft image already loaded within the same size bound used by file mentions.
+pub struct ImageAttachment {
+    pub path: Option<PathBuf>,
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+    pub blob: Option<String>,
+}
+
+impl ImageAttachment {
+    pub fn from_path(path: &Path) -> io::Result<Self> {
+        let path = path.canonicalize()?;
+        if !path.is_file() || !mime(&path).starts_with("image/") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not an image file",
+            ));
+        }
+        let bytes = read_at_most(&path, MEDIA_LIMIT)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "image exceeds 5 MiB limit")
+        })?;
+        Ok(Self {
+            mime_type: mime(&path).into(),
+            path: Some(path),
+            blob: None,
+            bytes,
+        })
+    }
+
+    pub fn from_clipboard(mime_type: String, bytes: Vec<u8>) -> io::Result<Self> {
+        if bytes.is_empty() || bytes.len() as u64 > MEDIA_LIMIT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "clipboard image is empty or exceeds 5 MiB limit",
+            ));
+        }
+        Ok(Self {
+            path: None,
+            mime_type,
+            bytes,
+            blob: None,
+        })
+    }
+
+    pub fn into_block(self) -> ContentBlock {
+        let mut image = ImageContent::new(STANDARD.encode(self.bytes), self.mime_type);
+        if let Some(path) = self.path {
+            image = image.uri(file_uri(&path));
+        }
+        ContentBlock::Image(image)
+    }
+}
 
 #[derive(Default)]
 pub struct AttachPicker {
@@ -182,6 +234,36 @@ impl AttachPicker {
             self.open = false;
         }
     }
+}
+
+/// Recognize a paste that consists entirely of one explicitly local image path.
+pub fn pasted_image_path(text: &str) -> Option<PathBuf> {
+    let text = text.trim();
+    if text.contains('\n') || text.contains('\r') {
+        return None;
+    }
+    let text = text
+        .strip_prefix('"')
+        .and_then(|path| path.strip_suffix('"'))
+        .or_else(|| {
+            text.strip_prefix('\'')
+                .and_then(|path| path.strip_suffix('\''))
+        })
+        .unwrap_or(text);
+    let path = if let Some(uri) = text.strip_prefix("file://") {
+        let uri = uri.strip_prefix("localhost").unwrap_or(uri);
+        if !uri.starts_with('/') {
+            return None;
+        }
+        PathBuf::from(decode_mention(uri).ok()?)
+    } else if let Some(rest) = text.strip_prefix("~/") {
+        std::env::var_os("HOME").map(PathBuf::from)?.join(rest)
+    } else if text.starts_with('/') || text.starts_with("./") || text.starts_with("../") {
+        PathBuf::from(text.replace("\\ ", " "))
+    } else {
+        return None;
+    };
+    mime(&path).starts_with("image/").then_some(path)
 }
 
 fn mime(path: &Path) -> &'static str {

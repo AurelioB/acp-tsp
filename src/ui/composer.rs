@@ -5,6 +5,7 @@ use tern_sdk::wire::Edit;
 #[derive(Default)]
 pub struct Composer {
     pub text: String,
+    pub images: Vec<super::attach::ImageAttachment>,
     pub cursor: usize,
     undo: Vec<(String, usize)>,
     history: Vec<String>,
@@ -116,14 +117,16 @@ impl Composer {
     }
 
     pub fn take(&mut self) -> Option<String> {
-        if self.text.trim().is_empty() {
+        if self.text.trim().is_empty() && self.images.is_empty() {
             return None;
         }
         let text = std::mem::take(&mut self.text);
         self.cursor = 0;
         self.undo.clear();
         self.history_index = None;
-        self.history.push(text.clone());
+        if !text.is_empty() {
+            self.history.push(text.clone());
+        }
         Some(text)
     }
 
