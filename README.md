@@ -47,8 +47,11 @@ Right-click a message for Copy (and Edit on your own prompts, which puts the tex
 composer). Code, terminal output and diffs copy the same way; tool cards and resource links
 with a file or web target open with ⌘-click or Open; images zoom on click. Folding a card stays
 as you left it when its tool finishes. JSON in tool input/output shows as a native tree, or a
-table for lists of flat records, with the raw JSON kept beside it. Math in agent answers
-(`$…$`, `$$…$$`) is typeset by Tern's Markdown.
+table for lists of flat records, with the raw JSON kept beside it. Messages render as Tern
+Markdown: tables (with severity pills), task lists, callouts, code fences, math (`$…$`,
+`$$…$$`), mermaid diagrams and linked file paths. A single newline in a message is kept as a
+line break, as the agents' own UIs show it (not inside code fences, indented code or display
+math). Images you send show in your prompt bubble, also when Codex replays a resumed session.
 
 `setup-tern` updates `agent_command` in Tern's settings, making a timestamped backup first. It leaves `new_blocks` unchanged unless passed `--new-blocks-agent`; `--settings PATH` overrides settings location and `--print` prints the JSON snippet without writing. On Linux the default settings location is `$XDG_CONFIG_HOME/tern/settings.json` (or `~/.config/tern/settings.json`), a best-known default that may vary by Tern installation. macOS uses `~/Library/Application Support/Tern/settings.json`.
 

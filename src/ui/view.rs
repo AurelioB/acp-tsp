@@ -111,7 +111,7 @@ pub fn view_with(
                                     &scope,
                                 )
                             } else {
-                                ui::md(text.text.clone())
+                                ui::md(super::content::line_breaks(&text.text))
                                     .key(format!("body.{i}"))
                                     .stream(model.is_streaming(entry))
                                     .actions(super::content::copy_menu())

@@ -295,3 +295,91 @@ impl super::Model {
         }
     }
 }
+
+/// Splits text holding Markdown links to inline `data:image/...;base64,` URLs (how codex-acp
+/// replays a prompt's images) into text and image blocks. `None` when there are none.
+pub fn inline_data_images(text: &str) -> Option<Vec<ContentBlock>> {
+    use agent_client_protocol::schema::v1::{ImageContent, TextContent};
+    const START: &str = "](data:image/";
+    if !text.contains(START) {
+        return None;
+    }
+    let mut blocks = Vec::new();
+    let mut rest = text;
+    let mut found = false;
+    while let Some(at) = rest.find(START) {
+        // The adapter's attachment form only: `[@name](data:…)`.
+        let Some(open) = rest[..at]
+            .rfind("[@")
+            .filter(|open| !rest[open + 1..at].contains(']'))
+        else {
+            break;
+        };
+        let url = &rest[at + 2..];
+        let Some(close) = url.find(')') else { break };
+        let url = &url[..close];
+        let Some((mime, data)) = url
+            .strip_prefix("data:")
+            .and_then(|url| url.split_once(";base64,"))
+            .filter(|(mime, data)| {
+                mime.starts_with("image/")
+                    && !data.is_empty()
+                    && data
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+            })
+        else {
+            break;
+        };
+        let before = &rest[..open];
+        if !before.is_empty() {
+            blocks.push(ContentBlock::Text(TextContent::new(before)));
+        }
+        blocks.push(ContentBlock::Image(ImageContent::new(data, mime)));
+        found = true;
+        rest = &rest[at + 2 + close + 1..];
+    }
+    if !found {
+        return None;
+    }
+    if !rest.is_empty() {
+        blocks.push(ContentBlock::Text(TextContent::new(rest)));
+    }
+    Some(blocks)
+}
+
+#[cfg(test)]
+mod inline_image_tests {
+    use agent_client_protocol::schema::v1::{ContentBlock, ImageContent, TextContent};
+
+    use super::inline_data_images;
+
+    #[test]
+    fn replayed_data_url_links_become_images() {
+        let text = "What colors?[@image](data:image/png;base64,iVBORw0K+/=) and [@image](data:image/jpeg;base64,AAAA)";
+        assert_eq!(
+            inline_data_images(text).unwrap(),
+            [
+                ContentBlock::Text(TextContent::new("What colors?")),
+                ContentBlock::Image(ImageContent::new("iVBORw0K+/=", "image/png")),
+                ContentBlock::Text(TextContent::new(" and ")),
+                ContentBlock::Image(ImageContent::new("AAAA", "image/jpeg")),
+            ]
+        );
+    }
+
+    #[test]
+    fn other_links_and_malformed_data_stay_text() {
+        assert_eq!(inline_data_images("see [docs](https://x.test)"), None);
+        assert_eq!(
+            inline_data_images("[pic](data:image/png;base64,QQ==)"),
+            None,
+            "only the adapter's `[@name]` attachment form converts"
+        );
+        assert_eq!(inline_data_images("[a](data:text/plain;base64,QQ==)"), None);
+        assert_eq!(
+            inline_data_images("[a](data:image/png;base64,not base64!)"),
+            None
+        );
+    }
+}

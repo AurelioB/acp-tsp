@@ -184,6 +184,8 @@ pub struct Model {
     // Locally submitted prompts are authoritative; suppress only a matching
     // streamed echo during that prompt's live turn (not other user messages).
     local_echo: Option<(String, usize)>,
+    /// Images and audio the user sent that the adapter may echo back, one entry per echo.
+    echo_media: VecDeque<ContentBlock>,
     queued_echoes: VecDeque<String>,
     active_turn_id: u64,
 }
@@ -225,6 +227,7 @@ impl Default for Model {
             restartable: true,
             next_id: 0,
             local_echo: None,
+            echo_media: VecDeque::new(),
             queued_echoes: VecDeque::new(),
             active_turn_id: 0,
         }
@@ -248,6 +251,23 @@ impl Model {
             finished_at,
             kind,
         });
+    }
+
+    /// Shows what the user attached to the prompt just submitted (their text is already there),
+    /// and expects the adapter may echo the media back.
+    pub fn attach_to_prompt(&mut self, attached: Vec<ContentBlock>) {
+        for block in &attached {
+            if matches!(block, ContentBlock::Image(_) | ContentBlock::Audio(_)) {
+                self.echo_media.push_back(block.clone());
+            }
+        }
+        if let Some(Entry {
+            kind: EntryKind::User { blocks, .. },
+            ..
+        }) = self.transcript.last_mut()
+        {
+            blocks.extend(attached);
+        }
     }
 
     /// Record a submitted prompt locally; ACP-side prompt queues are reflected in the dock.
@@ -299,6 +319,8 @@ impl Model {
                 .map(|cost| (cost.currency.clone(), cost.amount));
         } else {
             self.turn = Turn::Idle;
+            // Nothing sent is still running: an echo can no longer come.
+            self.echo_media.clear();
         }
     }
 
@@ -347,6 +369,12 @@ impl Model {
     /// A steering message belongs to the active turn, not the next-prompt queue.
     pub fn steered(&mut self, text: String, blocks: Vec<ContentBlock>) {
         self.local_echo = Some((text, 0));
+        self.echo_media.extend(
+            blocks
+                .iter()
+                .filter(|block| matches!(block, ContentBlock::Image(_) | ContentBlock::Audio(_)))
+                .cloned(),
+        );
         self.push(EntryKind::Steering { blocks });
     }
 
@@ -388,6 +416,7 @@ impl Model {
                 self.usage_report = UsageReport { generation, ..UsageReport::default() };
                 self.local_echo = None;
                 self.queued_echoes.clear();
+                self.echo_media.clear();
                 self.transcript.clear();
                 self.folds.clear();
                 self.permissions.clear();
@@ -687,6 +716,18 @@ impl Model {
     }
 
     fn chunk(&mut self, kind: &'static str, chunk: ContentChunk) {
+        // codex-acp replays a prompt's image as a Markdown link to a `data:` URL; show the image.
+        if kind == "user"
+            && let ContentBlock::Text(text) = &chunk.content
+            && let Some(parts) = content::inline_data_images(&text.text)
+        {
+            for part in parts {
+                let mut piece = ContentChunk::new(part);
+                piece.message_id = chunk.message_id.clone();
+                self.chunk(kind, piece);
+            }
+            return;
+        }
         let block = chunk.content;
         let text = match &block {
             ContentBlock::Text(content) => content.text.clone(),
@@ -697,6 +738,15 @@ impl Model {
             if kind == "agent" {
                 self.usage_report.raw.push_str(&text);
             }
+            return;
+        }
+        // An adapter echoing an image or audio clip the user just sent: the local bubble already
+        // shows it.
+        if kind == "user"
+            && let Some(index) = self.echo_media.iter().position(|sent| *sent == block)
+        {
+            // Each sent attachment absorbs one echo.
+            self.echo_media.remove(index);
             return;
         }
         // Tern shows a locally submitted prompt immediately. Only discard

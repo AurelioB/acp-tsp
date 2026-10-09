@@ -330,7 +330,7 @@ pub fn block(
             {
                 json_display(&value, &text.text, &key, model, caps, scope)
             } else {
-                ui::md(text.text.clone())
+                ui::md(line_breaks(&text.text))
                     .key(key)
                     .actions(copy_menu())
                     .into()
@@ -454,6 +454,68 @@ pub fn user_blocks(
         body.insert(0, attachments.into());
     }
     body
+}
+
+/// Agents (and their own UIs) treat a single newline in prose as a line break; Markdown would
+/// join the lines into one paragraph ("1\n2\n3" as "1 2 3"). Marks each such newline as a
+/// hard break, outside code fences and display math, so the text keeps its lines.
+pub(crate) fn line_breaks(markdown: &str) -> std::borrow::Cow<'_, str> {
+    if !markdown.contains('\n') {
+        return markdown.into();
+    }
+    let lines: Vec<&str> = markdown.split('\n').collect();
+    let mut out = String::with_capacity(markdown.len() + lines.len() * 2);
+    let mut fence: Option<(char, usize)> = None;
+    let mut math = false;
+    for (i, line) in lines.iter().enumerate() {
+        // Fences inside quotes count too (`> ```rust`).
+        let trimmed = line.trim_start().trim_start_matches(['>', ' ']);
+        let opener = trimmed
+            .chars()
+            .next()
+            .filter(|c| *c == '`' || *c == '~')
+            .map(|c| (c, trimmed.chars().take_while(|d| *d == c).count()))
+            .filter(|(_, n)| *n >= 3);
+        let mut literal = fence.is_some() || math;
+        match (fence, opener) {
+            (None, Some(open)) if !math => {
+                fence = Some(open);
+                literal = true;
+            }
+            (Some((c, n)), Some((d, m)))
+                if c == d && m >= n && trimmed.trim_end().chars().all(|x| x == c) =>
+            {
+                fence = None;
+            }
+            _ => {}
+        }
+        if fence.is_none() && trimmed.trim_end() == "$$" {
+            math = !math;
+            literal = true;
+        }
+        out.push_str(line);
+        if i + 1 < lines.len() {
+            let next = lines[i + 1].trim();
+            // Indented lines may be code: never touched.
+            let indented = line.starts_with('\t') || line.starts_with("    ");
+            let breaks = !literal
+                && !indented
+                && fence.is_none()
+                && !math
+                && !line.trim().is_empty()
+                && !next.is_empty()
+                && !line.ends_with("  ")
+                && !line.ends_with('\\')
+                && !next.starts_with("```")
+                && !next.starts_with("~~~")
+                && next != "$$";
+            if breaks {
+                out.push_str("  ");
+            }
+            out.push('\n');
+        }
+    }
+    out.into()
 }
 
 fn link_href(uri: &str) -> Option<&str> {
@@ -592,5 +654,62 @@ mod tests {
                 .unwrap()
                 .contains("more")
         );
+    }
+}
+
+#[cfg(test)]
+mod line_break_tests {
+    use super::line_breaks;
+
+    #[test]
+    fn single_newlines_in_prose_become_hard_breaks() {
+        assert_eq!(line_breaks("1\n2\n3"), "1  \n2  \n3");
+        assert_eq!(
+            line_breaks("para one\n\npara two"),
+            "para one\n\npara two",
+            "blank lines still separate paragraphs"
+        );
+        assert_eq!(
+            line_breaks("a  \nb\\\nc"),
+            "a  \nb\\\nc",
+            "existing breaks kept"
+        );
+        assert_eq!(line_breaks("one line"), "one line");
+    }
+
+    #[test]
+    fn code_fences_and_display_math_are_left_alone() {
+        let source = "text\n```rust\nlet a = 1;\nlet b = 2;\n```\nafter\n$$\nx = 1\ny = 2\n$$\nend";
+        assert_eq!(
+            line_breaks(source),
+            "text\n```rust\nlet a = 1;\nlet b = 2;\n```\nafter\n$$\nx = 1\ny = 2\n$$\nend"
+        );
+        let tilde = "~~~~\na\n~~~\nb\n~~~~\nc\nd";
+        assert_eq!(
+            line_breaks(tilde),
+            "~~~~\na\n~~~\nb\n~~~~\nc  \nd",
+            "a shorter fence line does not close a longer fence"
+        );
+    }
+
+    #[test]
+    fn indented_code_quoted_fences_and_unclosed_fences_are_left_alone() {
+        assert_eq!(
+            line_breaks(
+                "text:
+
+    let a = 1;
+    let b = 2;
+
+after"
+            ),
+            "text:\n\n    let a = 1;\n    let b = 2;\n\nafter"
+        );
+        assert_eq!(
+            line_breaks("> ```sh\n> make\n> test\n> ```\n> done\n> now"),
+            "> ```sh\n> make\n> test\n> ```\n> done  \n> now"
+        );
+        // Mid-stream: the fence has not closed yet.
+        assert_eq!(line_breaks("a\n```\nx\ny"), "a\n```\nx\ny");
     }
 }

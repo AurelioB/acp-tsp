@@ -339,23 +339,20 @@ fn submit_with_queue(model: &mut Model, composer: &mut Composer, queue: bool) ->
         return Action::Command(UiCmd::Steer(prompt));
     }
     model.submitted(text);
-    if let Some(crate::model::Entry {
-        kind: crate::model::EntryKind::User { blocks, .. },
-        ..
-    }) = model.transcript.last_mut()
-    {
-        blocks.extend(
-            prompt
-                .iter()
-                .filter(|block| {
-                    matches!(
-                        block,
-                        agent_client_protocol::schema::v1::ContentBlock::ResourceLink(_)
-                    )
-                })
-                .cloned(),
-        );
-    }
+    model.attach_to_prompt(
+        prompt
+            .iter()
+            .filter(|block| {
+                matches!(
+                    block,
+                    agent_client_protocol::schema::v1::ContentBlock::ResourceLink(_)
+                        | agent_client_protocol::schema::v1::ContentBlock::Image(_)
+                        | agent_client_protocol::schema::v1::ContentBlock::Audio(_)
+                )
+            })
+            .cloned()
+            .collect(),
+    );
     Action::Command(UiCmd::Prompt(prompt))
 }
 
@@ -596,5 +593,124 @@ mod tests {
             Action::Command(UiCmd::Prompt(_))
         ));
         assert_eq!(model.queued, 2);
+    }
+}
+
+#[cfg(test)]
+mod sent_image_tests {
+    use agent_client_protocol::schema::v1::{
+        ContentBlock, ContentChunk, SessionUpdate, TextContent,
+    };
+
+    use super::*;
+    use base64::Engine as _;
+
+    use crate::{event::BridgeEvent, model::EntryKind, ui::paste::PastedImage};
+
+    /// A real 1x1 PNG.
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    fn images_per_prompt(model: &Model) -> Vec<usize> {
+        model
+            .transcript
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::User { blocks, .. } => Some(
+                    blocks
+                        .iter()
+                        .filter(|block| matches!(block, ContentBlock::Image(_)))
+                        .count(),
+                ),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn send(model: &mut Model, text: &str) -> ContentBlock {
+        let mut composer = Composer::default();
+        paste_image(
+            PastedImage {
+                mime_type: "image/png".into(),
+                bytes: base64::engine::general_purpose::STANDARD
+                    .decode(PNG)
+                    .unwrap(),
+            },
+            model,
+            &mut composer,
+        );
+        composer.insert(text);
+        let Action::Command(UiCmd::Prompt(prompt)) = submit(model, &mut composer) else {
+            panic!("prompt sent")
+        };
+        prompt
+            .into_iter()
+            .find(|block| matches!(block, ContentBlock::Image(_)))
+            .unwrap()
+    }
+
+    fn user_chunk(model: &mut Model, block: ContentBlock) {
+        model.apply(BridgeEvent::Update(Box::new(
+            SessionUpdate::UserMessageChunk(ContentChunk::new(block)),
+        )));
+    }
+
+    #[test]
+    fn a_sent_image_shows_in_the_prompt_and_its_echo_is_absorbed_once() {
+        let mut model = Model::default();
+        model.prompt_capabilities.image = true;
+        let image = send(&mut model, "what is this?");
+        assert_eq!(images_per_prompt(&model), [1], "the bubble shows the image");
+        user_chunk(
+            &mut model,
+            ContentBlock::Text(TextContent::new("what is this?")),
+        );
+        user_chunk(&mut model, image.clone());
+        assert_eq!(
+            images_per_prompt(&model),
+            [1],
+            "the echo adds no second copy"
+        );
+        // The same image arriving again is a new user message, not an echo.
+        user_chunk(&mut model, image);
+        assert_eq!(images_per_prompt(&model), [1, 1]);
+    }
+
+    #[test]
+    fn an_image_only_prompt_and_a_repeat_each_keep_their_image() {
+        let mut model = Model::default();
+        model.prompt_capabilities.image = true;
+        let first = send(&mut model, "");
+        // Queued behind the first turn: the same image again.
+        let second = send(&mut model, "again");
+        assert_eq!(first, second);
+        assert_eq!(images_per_prompt(&model), [1, 1]);
+        // Two echoes, one per submission.
+        user_chunk(&mut model, first);
+        user_chunk(&mut model, second.clone());
+        assert_eq!(images_per_prompt(&model), [1, 1]);
+        user_chunk(&mut model, second);
+        assert_eq!(
+            images_per_prompt(&model),
+            [1, 1, 1],
+            "a third copy is not an echo"
+        );
+    }
+
+    #[test]
+    fn an_echo_that_never_came_does_not_hide_the_image_later() {
+        use agent_client_protocol::schema::v1::{PromptResponse, StopReason};
+        let mut model = Model::default();
+        model.prompt_capabilities.image = true;
+        let image = send(&mut model, "first");
+        // The adapter did not echo; the turn ends.
+        model.apply(BridgeEvent::TurnEnded(Ok(Box::new(PromptResponse::new(
+            StopReason::EndTurn,
+        )))));
+        user_chunk(&mut model, image);
+        assert_eq!(
+            images_per_prompt(&model),
+            [1, 1],
+            "shown, not taken for an echo"
+        );
     }
 }
