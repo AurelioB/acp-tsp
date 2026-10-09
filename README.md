@@ -43,6 +43,14 @@ clearing: in an agent block Tern records it as `agent-done` itself; launched fro
 prompt, the busy indicator just stops and no inbox entry is added. Cancelled turns and hidden
 usage queries stay quiet.
 
+acp-tsp also reports its state with OSC 7501, the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status)
+(revision 0.3), for terminals and agent inboxes that read it: `idle` at start and after a
+cancel, `working` during a turn, `blocked` with `kind=permission`, `question` or `auth`,
+`done` when a turn finishes, `error` when it fails or the agent exits, and `clear` on quit.
+Messages are fixed phrases ("Permission needed", "Turn finished", …), never prompt or agent
+text; `app` is `codex`, `claude-code`, or the agent command's name. Terminals that don't know
+the sequence ignore it (Tern 0.6.3 does).
+
 Right-click a message for Copy (and Edit on your own prompts, which puts the text back in the
 composer). Code, terminal output and diffs copy the same way; tool cards and resource links
 with a file or web target open with ⌘-click or Open; images zoom on click. Folding a card stays

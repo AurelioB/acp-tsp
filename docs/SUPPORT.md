@@ -30,6 +30,7 @@ Status meanings:
 | session/list + load | yes | live | live | unknown |
 | session/resume, close, delete, fork | yes | fake | fake | unknown |
 | CLI `--resume ID` / `--resume` picker / `--continue`, resume hint on quit | yes | live (`--resume ID` replays history) | live (all three; a session open in another Codex client fails with Codex's own error) | unknown |
+| program status (OSC 7501 rev 0.3: idle, working, blocked + kind, done, error, clear) | yes | untested | live: idle, working, done and clear written to the pty during a turn and quit; no terminal here reads it yet (Tern 0.6.3 ignores it) | unknown |
 | pane title (OSC 2), working/waiting progress (OSC 9;4), attention notices (OSC 99) | yes | live (title, resume) | live (agent block: busy during turns, `waiting` inbox entry for a permission, one `agent-done` on completion) | unknown |
 | TSP: context menus (Copy, Edit), open/zoom links, fold memory, JSON tree/table, PageUp/PageDown, surface reopen, Ctrl+Z | yes (agent-independent) | live in headless Tern: Copy/Edit menu, Edit into composer, usage charts and heatmap; scripted: reveal, picker scroll, surface reopen, adopt fallback, JSON tree/table; Ctrl+Z untested live (headless Tern does not deliver Ctrl keys) | same | same |
 | image paste (OSC 5522 enhanced paste), dropped image files | yes | untested | live: dropped image file attaches with a thumbnail; window paste of a clipboard image untested (headless Tern has no clipboard) | unknown |

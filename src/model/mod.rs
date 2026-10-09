@@ -417,6 +417,7 @@ impl Model {
                 self.local_echo = None;
                 self.queued_echoes.clear();
                 self.echo_media.clear();
+                self.last_outcome = None;
                 self.transcript.clear();
                 self.folds.clear();
                 self.permissions.clear();

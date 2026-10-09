@@ -144,6 +144,8 @@ pub struct PaneSignals {
     /// busy until it reports progress, so idle must be said explicitly too.
     progress: Option<Progress>,
     dialog: Option<u64>,
+    /// The last OSC 7501 report written.
+    status: Option<String>,
     finished_turns: u64,
     exited: bool,
 }
@@ -157,6 +159,7 @@ impl PaneSignals {
             dialog: None,
             finished_turns: 0,
             exited: false,
+            status: None,
         }
     }
 
@@ -179,6 +182,11 @@ impl PaneSignals {
             self.out
                 .write(format!("\x1b]9;4;{};\x1b\\", progress as u8).as_bytes())?;
             self.progress = Some(progress);
+        }
+        let status = status_report(model);
+        if self.status.as_ref() != Some(&status) {
+            self.out.write(status.as_bytes())?;
+            self.status = Some(status);
         }
         let dialog = model.dialogs.front().copied();
         if dialog != self.dialog {
@@ -217,7 +225,7 @@ impl PaneSignals {
         Ok(())
     }
 
-    /// Leaves no progress behind when the program quits.
+    /// Leaves no progress or status record behind when the program quits.
     pub fn clear(&mut self) -> io::Result<()> {
         if self
             .progress
@@ -225,6 +233,9 @@ impl PaneSignals {
         {
             self.out.write(b"\x1b]9;4;0;\x1b\\")?;
             self.progress = Some(Progress::Clear);
+        }
+        if self.status.take().is_some() {
+            self.out.write(b"\x1b]7501;state=clear\x1b\\")?;
         }
         Ok(())
     }
@@ -269,6 +280,74 @@ pub fn progress(model: &Model) -> Progress {
         Progress::Working
     } else {
         Progress::Clear
+    }
+}
+
+/// The OSC 7501 (Program Status Protocol, revision 0.3) report for the root record: one state
+/// for the whole session, with fixed messages only, so no prompt or agent text leaves the pane.
+/// Sent alongside OSC 9;4, which the protocol allows.
+pub fn status_report(model: &Model) -> String {
+    let (state, kind, msg) = if model.exited.is_some() {
+        ("error", None, Some("Agent exited"))
+    } else if model.oldest_permission().is_some() {
+        ("blocked", Some("permission"), Some("Permission needed"))
+    } else if let Some(request) = model.oldest_elicitation() {
+        if matches!(
+            request.request.mode,
+            agent_client_protocol::schema::v1::ElicitationMode::Url(_)
+        ) {
+            ("blocked", Some("auth"), Some("Sign-in required"))
+        } else {
+            ("blocked", Some("question"), Some("Question waiting"))
+        }
+    } else if model.auth.is_some() {
+        ("blocked", Some("auth"), Some("Sign-in required"))
+    } else if matches!(model.turn, Turn::Running { .. }) && !model.usage_report.fetching {
+        ("working", None, None)
+    } else {
+        match model.last_outcome {
+            Some(TurnOutcome::Done) => ("done", None, Some("Turn finished")),
+            Some(TurnOutcome::Stopped(_)) => ("done", None, Some("Turn stopped early")),
+            Some(TurnOutcome::Failed) => ("error", None, Some("Turn failed")),
+            // Cancelling returns to idle, as the protocol asks.
+            Some(TurnOutcome::Cancelled) | None => ("idle", None, None),
+        }
+    };
+    let mut report = format!("\x1b]7501;state={state}");
+    if let Some(kind) = kind {
+        report.push_str(&format!(":kind={kind}"));
+    }
+    report.push_str(&format!(":app={}", status_app(model)));
+    if let Some(msg) = msg {
+        report.push_str(&format!(":msg={}", BASE64.encode(msg)));
+    }
+    report.push_str("\x1b\\");
+    report
+}
+
+/// A stable `app` name in the protocol's character set (`[A-Za-z0-9_.+-]{1,32}`).
+fn status_app(model: &Model) -> String {
+    let name = model
+        .agent
+        .as_ref()
+        .map_or(model.launch_name.as_str(), |agent| agent.name.as_str());
+    match name {
+        crate::quirks::CODEX_ACP => return "codex".into(),
+        crate::quirks::CLAUDE_ACP => return "claude-code".into(),
+        _ => {}
+    }
+    let name: String = name
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-'))
+        .take(32)
+        .collect();
+    if name.is_empty() {
+        "acp-tsp".into()
+    } else {
+        name
     }
 }
 
@@ -329,8 +408,50 @@ mod tests {
         (PaneSignals::new(&term), bytes)
     }
 
+    /// Everything written but OSC 7501 status reports (checked by `statuses`).
     fn take(bytes: &Rc<RefCell<Vec<u8>>>) -> String {
+        let (other, _) = split_status(&raw(bytes));
+        other
+    }
+
+    fn raw(bytes: &Rc<RefCell<Vec<u8>>>) -> String {
         String::from_utf8(std::mem::take(&mut *bytes.borrow_mut())).unwrap()
+    }
+
+    /// Splits written output into the rest and the OSC 7501 report bodies.
+    fn split_status(out: &str) -> (String, Vec<String>) {
+        let mut other = String::new();
+        let mut reports = Vec::new();
+        let mut rest = out;
+        while let Some(start) = rest.find("\x1b]7501;") {
+            other.push_str(&rest[..start]);
+            let body = &rest[start + "\x1b]7501;".len()..];
+            let end = body.find("\x1b\\").expect("terminated with ST");
+            reports.push(body[..end].to_owned());
+            rest = &body[end + 2..];
+        }
+        other.push_str(rest);
+        (other, reports)
+    }
+
+    /// The OSC 7501 reports written since the last call, `msg` decoded for reading.
+    fn statuses(bytes: &Rc<RefCell<Vec<u8>>>) -> Vec<String> {
+        split_status(&raw(bytes))
+            .1
+            .into_iter()
+            .map(|body| {
+                body.split(':')
+                    .map(|pair| match pair.split_once('=') {
+                        Some(("msg", value)) => format!(
+                            "msg={}",
+                            String::from_utf8(BASE64.decode(value).unwrap()).unwrap()
+                        ),
+                        _ => pair.to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(":")
+            })
+            .collect()
     }
 
     fn started() -> Model {
@@ -454,6 +575,113 @@ mod tests {
                 "line ]2;evil".into()
             )]
         );
+    }
+
+    #[test]
+    fn program_status_follows_the_session_lifecycle() {
+        use agent_client_protocol::schema::v1::{
+            CreateElicitationRequest, ElicitationFormMode, ElicitationSchema,
+            ElicitationSessionScope,
+        };
+        let (mut signals, bytes) = signals();
+        let mut model = started();
+        signals.sync(&model).unwrap();
+        assert_eq!(statuses(&bytes), ["state=idle:app=Codex"]);
+        signals.sync(&model).unwrap();
+        assert!(statuses(&bytes).is_empty(), "only changes are reported");
+
+        model.submitted("hi".into());
+        signals.sync(&model).unwrap();
+        assert_eq!(statuses(&bytes), ["state=working:app=Codex"]);
+
+        permission(&mut model, 7);
+        signals.sync(&model).unwrap();
+        assert_eq!(
+            statuses(&bytes),
+            ["state=blocked:kind=permission:app=Codex:msg=Permission needed"]
+        );
+        model.apply(BridgeEvent::Resolved(7));
+        model.apply(BridgeEvent::Elicitation {
+            id: 8,
+            request: Box::new(CreateElicitationRequest::new(
+                ElicitationFormMode::new(
+                    ElicitationSessionScope::new("s1"),
+                    ElicitationSchema::new(),
+                ),
+                "Pick one",
+            )),
+        });
+        signals.sync(&model).unwrap();
+        assert_eq!(
+            statuses(&bytes),
+            ["state=blocked:kind=question:app=Codex:msg=Question waiting"],
+            "a fixed message: the agent's question text stays in the pane"
+        );
+        model.apply(BridgeEvent::Resolved(8));
+        signals.sync(&model).unwrap();
+        assert_eq!(statuses(&bytes), ["state=working:app=Codex"]);
+
+        end(&mut model, Ok(StopReason::EndTurn));
+        signals.sync(&model).unwrap();
+        assert_eq!(statuses(&bytes), ["state=done:app=Codex:msg=Turn finished"]);
+
+        // A hidden usage query is no new work: the result stays unseen-done.
+        model.begin_usage();
+        signals.sync(&model).unwrap();
+        assert!(statuses(&bytes).is_empty());
+        end(&mut model, Ok(StopReason::EndTurn));
+
+        model.submitted("again".into());
+        model.cancel();
+        end(&mut model, Ok(StopReason::Cancelled));
+        signals.sync(&model).unwrap();
+        assert_eq!(
+            statuses(&bytes),
+            ["state=idle:app=Codex"],
+            "cancelling reports idle"
+        );
+
+        model.submitted("third".into());
+        end(&mut model, Err("boom".into()));
+        signals.sync(&model).unwrap();
+        assert_eq!(statuses(&bytes), ["state=error:app=Codex:msg=Turn failed"]);
+
+        model.apply(BridgeEvent::AgentExited {
+            reason: "gone".into(),
+        });
+        signals.sync(&model).unwrap();
+        assert_eq!(statuses(&bytes), ["state=error:app=Codex:msg=Agent exited"]);
+
+        signals.clear().unwrap();
+        assert_eq!(
+            statuses(&bytes),
+            ["state=clear"],
+            "quitting leaves no record"
+        );
+    }
+
+    #[test]
+    fn known_adapters_report_their_program_name() {
+        use agent_client_protocol::schema::{
+            ProtocolVersion,
+            v1::{Implementation, InitializeResponse},
+        };
+        for (name, app) in [
+            ("@agentclientprotocol/codex-acp", "codex"),
+            ("@agentclientprotocol/claude-agent-acp", "claude-code"),
+            ("@scope/some agent!", "someagent"),
+        ] {
+            let mut model = Model::default();
+            model.apply(BridgeEvent::Initialized(Box::new(
+                InitializeResponse::new(ProtocolVersion::V1)
+                    .agent_info(Implementation::new(name, "1")),
+            )));
+            assert!(
+                status_report(&model).contains(&format!(":app={app}\x1b")),
+                "{name}: {}",
+                status_report(&model)
+            );
+        }
     }
 
     /// Decodes OSC 99 notices as (id suffix, title, body).
