@@ -687,6 +687,9 @@ mod tests {
             ("@agentclientprotocol/codex-acp", "codex"),
             ("@agentclientprotocol/claude-agent-acp", "claude-code"),
             ("@scope/some agent!", "someagent"),
+            ("@scope/!!!", "acp-tsp"),
+            ("é/ünïcode-ägent", "ncode-gent"),
+            (&"x".repeat(40), &"x".repeat(32)),
         ] {
             let mut model = Model::default();
             model.apply(BridgeEvent::Initialized(Box::new(
