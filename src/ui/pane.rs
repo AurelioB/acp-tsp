@@ -661,6 +661,23 @@ mod tests {
     }
 
     #[test]
+    fn a_new_session_starts_idle_not_with_the_old_result() {
+        use crate::event::SessionStartKind;
+        let (mut signals, bytes) = signals();
+        let mut model = started();
+        model.submitted("hi".into());
+        end(&mut model, Ok(StopReason::EndTurn));
+        signals.sync(&model).unwrap();
+        assert_eq!(
+            statuses(&bytes).last().unwrap(),
+            "state=done:app=Codex:msg=Turn finished"
+        );
+        model.apply(BridgeEvent::SessionStarting(SessionStartKind::New));
+        signals.sync(&model).unwrap();
+        assert_eq!(statuses(&bytes), ["state=idle:app=Codex"]);
+    }
+
+    #[test]
     fn known_adapters_report_their_program_name() {
         use agent_client_protocol::schema::{
             ProtocolVersion,
